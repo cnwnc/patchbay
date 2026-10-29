@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patchbay — Console</title>
+  <link rel="stylesheet" href="console-a.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span class="brand-name">PATCHBAY</span>
+      <span class="brand-view">CONSOLE</span>
+    </div>
+    <div class="top-status">
+      <span class="top-item"><i class="lamp lamp-green"></i>MANAGER</span>
+      <span class="top-item">WORKERS <b>12/16</b></span>
+      <span class="top-item">OPEN RUNS <b>03</b></span>
+      <span class="top-item">DISPATCH <b>02</b></span>
+      <span class="top-item">SIGNAL <b class="signal-word">NOMINAL</b></span>
+    </div>
+    <div class="top-right">
+      <span class="top-item top-local">LOCAL</span>
+      <time class="clock" datetime="2026-10-28T14:22:07Z">14:22:07 <span>UTC</span></time>
+      <span class="top-user">agent@patchbay</span>
+    </div>
+  </header>
+
+  <main class="console">
+
+    <aside class="channels-panel" aria-label="Channels">
+      <div class="rail-head">
+        <h1>CHANNELS</h1>
+        <span class="rail-count">08</span>
+      </div>
+
+      <div class="channel-tools">
+        <span class="tool-label">FILTER</span>
+        <span class="tool-value">ALL <span class="caret">▾</span></span>
+        <span class="tool-divider"></span>
+        <span class="tool-label">SORT</span>
+        <span class="tool-value">ACTIVITY <span class="caret">▾</span></span>
+      </div>
+
+      <div class="channel-list">
+
+        <section class="channel-group">
+          <h2>PERPETUAL <span>03</span></h2>
+
+          <a class="strip is-active" href="#release-guard" aria-current="true">
+            <span class="strip-head">
+              <span class="strip-num">01</span>
+              <span class="strip-name">release-guard</span>
+              <span class="state state-running"><i class="lamp lamp-amber"></i>RUNNING</span>
+            </span>
+            <span class="strip-meta"><span>PERPETUAL</span><span>RUN 184</span><span>02:14</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:63%"></span></span>
+              <span class="read-value">63</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark spark-live">▁▂▅▆▃▂▁▃▄▂▁▁</span>
+              <span class="last-tool">mix test</span>
+              <span class="last-time">00:18</span>
+            </span>
+          </a>
+
+          <a class="strip" href="#support-triage">
+            <span class="strip-head">
+              <span class="strip-num">02</span>
+              <span class="strip-name">support-triage</span>
+              <span class="state state-running"><i class="lamp lamp-amber"></i>RUNNING</span>
+            </span>
+            <span class="strip-meta"><span>PERPETUAL</span><span>RUN 077</span><span>00:41</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:41%"></span></span>
+              <span class="read-value">41</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark spark-live">▁▃▂▅▃▃▂▁▂▃▁▁</span>
+              <span class="last-tool">search_logs</span>
+              <span class="last-time">12ms</span>
+            </span>
+          </a>
+
+          <a class="strip" href="#corpus-indexer">
+            <span class="strip-head">
+              <span class="strip-num">03</span>
+              <span class="strip-name">corpus-indexer</span>
+              <span class="state state-paused"><i class="lamp lamp-amber lamp-ring"></i>PAUSED</span>
+            </span>
+            <span class="strip-meta"><span>PERPETUAL</span><span>RUN 012</span><span>47:02</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill is-high" style="width:88%"></span></span>
+              <span class="read-value">88</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark">▁▁▁▂▃▅▆▇▅▃▁▁</span>
+              <span class="last-tool">embed_batch</span>
+              <span class="last-time">manual</span>
+            </span>
+          </a>
+        </section>
+
+        <section class="channel-group">
+          <h2>SCHEDULED <span>03</span></h2>
+
+          <a class="strip" href="#morning-digest">
+            <span class="strip-head">
+              <span class="strip-num">04</span>
+              <span class="strip-name">morning-digest</span>
+              <span class="state state-scheduled"><i class="lamp lamp-blue"></i>SCHEDULED</span>
+            </span>
+            <span class="strip-meta"><span>NEXT 06:42</span><span>IN 16H 20M</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:22%"></span></span>
+              <span class="read-value">22</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark">▁▁▁▁▂▁▁▁▁▁▁▁</span>
+              <span class="last-tool">write_file</span>
+              <span class="last-time">00:04</span>
+            </span>
+          </a>
+
+          <a class="strip" href="#dep-audit">
+            <span class="strip-head">
+              <span class="strip-num">05</span>
+              <span class="strip-name">dep-audit</span>
+              <span class="state state-idle"><i class="lamp lamp-empty"></i>IDLE</span>
+            </span>
+            <span class="strip-meta"><span>NEXT 12:00</span><span>IN 21H 38M</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:9%"></span></span>
+              <span class="read-value">09</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark">▁▁▁▁▁▂▁▁▁▁▁▁</span>
+              <span class="last-tool">nix flake</span>
+              <span class="last-time">1.2s</span>
+            </span>
+          </a>
+
+          <a class="strip" href="#pr-review">
+            <span class="strip-head">
+              <span class="strip-num">06</span>
+              <span class="strip-name">pr-review</span>
+              <span class="state state-failed"><i class="lamp lamp-red"></i>FAILED</span>
+            </span>
+            <span class="strip-meta"><span>RETRY 14:30</span><span>IN 00:08</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill is-high" style="width:71%"></span></span>
+              <span class="read-value">71</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark spark-error">▁▂▄▆▇▅▃▁▁▁▁▁</span>
+              <span class="last-tool">post_comment</span>
+              <span class="last-time">502</span>
+            </span>
+          </a>
+        </section>
+
+        <section class="channel-group">
+          <h2>ONESHOT <span>02</span></h2>
+
+          <a class="strip" href="#docs-drift">
+            <span class="strip-head">
+              <span class="strip-num">07</span>
+              <span class="strip-name">docs-drift</span>
+              <span class="state state-queued"><i class="lamp lamp-amber lamp-ring"></i>QUEUED</span>
+            </span>
+            <span class="strip-meta"><span>QUEUE 01</span><span>WAIT 04M</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:36%"></span></span>
+              <span class="read-value">36</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark">▁▁▁▁▁▁▁▂▁▁▁▁</span>
+              <span class="last-tool">enqueue</span>
+              <span class="last-time">04m</span>
+            </span>
+          </a>
+
+          <a class="strip" href="#nightly-backfill">
+            <span class="strip-head">
+              <span class="strip-num">08</span>
+              <span class="strip-name">nightly-backfill</span>
+              <span class="state state-done"><i class="lamp lamp-green"></i>DONE</span>
+            </span>
+            <span class="strip-meta"><span>RUN 009</span><span>10:24</span></span>
+            <span class="strip-read">
+              <span class="read-label">CTX</span>
+              <span class="meter"><span class="meter-fill" style="width:4%"></span></span>
+              <span class="read-value">04</span>
+            </span>
+            <span class="strip-tail">
+              <span class="spark">▁▂▃▅▇▆▄▂▁▁▁▁</span>
+              <span class="last-tool">complete_task</span>
+              <span class="last-time">10:24</span>
+            </span>
+          </a>
+        </section>
+
+      </div>
+
+      <div class="rail-foot">
+        <span>CH 01 SELECTED</span>
+        <span>RUN 184</span>
+      </div>
+    </aside>
+
+    <section class="channel-column" id="release-guard" aria-label="release-guard channel">
+
+      <header class="channel-head">
+        <div class="channel-kicker">
+          <span class="channel-index">CH 01</span>
+          <span class="kicker-slash">/</span>
+          <span>PERPETUAL</span>
+          <span class="kicker-slash">/</span>
+          <span class="channel-live"><i class="lamp lamp-amber"></i>RUNNING</span>
+        </div>
+        <div class="channel-title-row">
+          <h2>release-guard</h2>
+          <span class="run-chip">RUN 184</span>
+          <span class="turn-chip">TURN 12</span>
+        </div>
+        <div class="channel-sub">
+          <span>MODEL <b>default/atlas-2</b></span>
+          <span>REASONING <b>medium</b></span>
+          <span>ATTEMPT <b>01</b></span>
+          <span>WORKER <b>w-07</b></span>
+        </div>
+        <div class="channel-clock">
+          <span class="clock-label">ELAPSED</span>
+          <span class="clock-value">02:14:08</span>
+        </div>
+      </header>
+
+      <div class="metric-strip">
+        <div class="metric">
+          <span class="metric-label">CONTEXT</span>
+          <span class="metric-value">63<span class="unit">%</span></span>
+          <span class="metric-note">REV 07</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">TOKENS</span>
+          <span class="metric-value">630.4<span class="unit">k</span></span>
+          <span class="metric-note">OF 1.0M</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">CALLS</span>
+          <span class="metric-value">42</span>
+          <span class="metric-note metric-note-error">01 ERR</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">TURN</span>
+          <span class="metric-value">12</span>
+          <span class="metric-note">04 CALLS</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">SIGNAL</span>
+          <span class="metric-value metric-signal"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="metric-note">OUT 0.82</span>
+        </div>
+      </div>
+
+      <div class="channel-body">
+
+        <section class="activity-panel" aria-label="Tool activity">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h3>TOOL ACTIVITY</h3>
+              <span class="panel-sub">RUN 184</span>
+            </div>
+            <div class="panel-tools">
+              <span class="live-flag"><i class="lamp lamp-amber"></i>LIVE</span>
+              <span class="panel-stat">42 CALLS</span>
+              <span class="panel-stat panel-stat-error">01 ERR</span>
+            </div>
+          </div>
+
+          <div class="activity-scroll">
+            <table class="activity-table">
+              <colgroup>
+                <col class="col-seq">
+                <col class="col-time">
+                <col class="col-tool">
+                <col class="col-args">
+                <col class="col-dur">
+                <col class="col-status">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>SEQ</th>
+                  <th>TIME</th>
+                  <th>TOOL</th>
+                  <th>ARGUMENT</th>
+                  <th>DUR</th>
+                  <th>STATUS</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="turn-row">
+                  <td colspan="6">
+                    <span class="turn-id">TURN 10</span>
+                    <span class="turn-time">02:10:12 — 02:11:58</span>
+                    <span class="turn-sum">04 CALLS</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="num">034</td>
+                  <td class="num">02:10:18</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">read_file</span></td>
+                  <td class="args">lib/patchbay/manager.ex:1–120</td>
+                  <td class="num">0.06s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">035</td>
+                  <td class="num">02:10:24</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">ripgrep</span></td>
+                  <td class="args">"Supervisor" lib/</td>
+                  <td class="num">0.01s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">036</td>
+                  <td class="num">02:10:31</td>
+                  <td><span class="toolkit">memory</span><span class="tool-sep">/</span><span class="tool-name">recall</span></td>
+                  <td class="args">release-42 / previous</td>
+                  <td class="num">0.03s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">037</td>
+                  <td class="num">02:11:02</td>
+                  <td><span class="toolkit">fixed-ops</span><span class="tool-sep">/</span><span class="tool-name">nix_build</span></td>
+                  <td class="args">.#checks.x86_64-linux.manager</td>
+                  <td class="num">18.2s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+
+                <tr class="turn-row">
+                  <td colspan="6">
+                    <span class="turn-id">TURN 11</span>
+                    <span class="turn-time">02:12:31 — 02:13:19</span>
+                    <span class="turn-sum">05 CALLS · 01 ERR</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="num">038</td>
+                  <td class="num">02:12:34</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">read_file</span></td>
+                  <td class="args">test/patchbay/manager_test.exs</td>
+                  <td class="num">0.05s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">039</td>
+                  <td class="num">02:12:39</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">ripgrep</span></td>
+                  <td class="args">"worker_ready" test/</td>
+                  <td class="num">0.01s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">040</td>
+                  <td class="num">02:12:46</td>
+                  <td><span class="toolkit">fixed-ops</span><span class="tool-sep">/</span><span class="tool-name">mix_test</span></td>
+                  <td class="args">test/patchbay/manager_test.exs</td>
+                  <td class="num">12.4s</td>
+                  <td class="status status-err">ERR</td>
+                </tr>
+                <tr>
+                  <td class="num">041</td>
+                  <td class="num">02:13:07</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">read_file</span></td>
+                  <td class="args">lib/patchbay/worker.ex:1–72</td>
+                  <td class="num">0.03s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">042</td>
+                  <td class="num">02:13:11</td>
+                  <td><span class="toolkit">memory</span><span class="tool-sep">/</span><span class="tool-name">recall</span></td>
+                  <td class="args">run 184 / patchbay</td>
+                  <td class="num">0.02s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+
+                <tr class="turn-row">
+                  <td colspan="6">
+                    <span class="turn-id">TURN 12</span>
+                    <span class="turn-time">02:13:39 — NOW</span>
+                    <span class="turn-sum">03 CALLS · 01 ACTIVE</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="num">043</td>
+                  <td class="num">02:13:41</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">read_file</span></td>
+                  <td class="args">test/patchbay/manager_test.exs:142–188</td>
+                  <td class="num">0.04s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr>
+                  <td class="num">044</td>
+                  <td class="num">02:13:44</td>
+                  <td><span class="toolkit">workspace</span><span class="tool-sep">/</span><span class="tool-name">apply_patch</span></td>
+                  <td class="args">test/patchbay/manager_test.exs <span class="diff">+14 −03</span></td>
+                  <td class="num">0.02s</td>
+                  <td class="status status-ok">OK</td>
+                </tr>
+                <tr class="is-live">
+                  <td class="num">045</td>
+                  <td class="num">02:13:52</td>
+                  <td><span class="toolkit">fixed-ops</span><span class="tool-sep">/</span><span class="tool-name">mix_test</span></td>
+                  <td class="args">test/patchbay/manager_test.exs</td>
+                  <td class="num">00:18</td>
+                  <td class="status status-run">RUN</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="stream-block">
+            <div class="stream-head">
+              <span class="stream-title">LIVE OUTPUT</span>
+              <span class="stream-call">045 / fixed-ops.mix_test</span>
+              <span class="stream-state"><i class="lamp lamp-amber"></i>STREAMING</span>
+            </div>
+            <pre>mix test test/patchbay/manager_test.exs
+Running ExUnit with seed 3182...
+....</pre>
+          </div>
+        </section>
+
+        <aside class="context-panel" aria-label="Current context">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h3>CURRENT CONTEXT</h3>
+            </div>
+            <div class="panel-tools">
+              <span class="rev-chip">R07</span>
+              <button class="mini-button" type="button">FOLD</button>
+            </div>
+          </div>
+
+          <div class="context-meter">
+            <div class="context-top">
+              <span class="context-big">63<span>%</span></span>
+              <span class="context-tokens">630,412 <span>/ 1,000,000 TOK</span></span>
+            </div>
+            <div class="meter meter-lg"><span class="meter-fill" style="width:63%"></span></div>
+            <div class="meter-scale"><span>0</span><span>250k</span><span>500k</span><span>750k</span><span>1M</span></div>
+          </div>
+
+          <div class="context-facts">
+            <div class="context-fact"><span>MESSAGES</span><b>18</b></div>
+            <div class="context-fact"><span>TOOL CALLS</span><b>42</b></div>
+            <div class="context-fact"><span>ARCHIVES</span><b>06</b></div>
+            <div class="context-fact"><span>SEALED</span><b>02:02</b></div>
+          </div>
+
+          <div class="source-head">
+            <span>PROMPT ORDER</span>
+            <span>TOK</span>
+          </div>
+          <div class="source-list">
+            <div class="source-row"><span class="source-index">01</span><span class="source-name">00-identity.md</span><span class="source-tok">1,204</span></div>
+            <div class="source-row"><span class="source-index">02</span><span class="source-name">10-behavior.md</span><span class="source-tok">2,842</span></div>
+            <div class="source-row"><span class="source-index">03</span><span class="source-name">20-tool-discipline.md</span><span class="source-tok">3,110</span></div>
+            <div class="source-row"><span class="source-index">04</span><span class="source-name">shared/release.md</span><span class="source-tok">1,988</span></div>
+            <div class="source-row"><span class="source-index">05</span><span class="source-name">memory/active.md</span><span class="source-tok">4,206</span></div>
+            <div class="source-row"><span class="source-index">06</span><span class="source-name">handoff.md</span><span class="source-tok">3,980</span></div>
+            <div class="source-row"><span class="source-index">07</span><span class="source-name">notes.md</span><span class="source-tok">2,614</span></div>
+          </div>
+
+          <div class="context-foot">
+            <span>FOLDED</span>
+            <b>02:02:10</b>
+            <span class="context-rev">R06 → R07</span>
+          </div>
+
+          <div class="working-head">
+            <span>WORKING SET</span>
+            <span>04</span>
+          </div>
+          <div class="working-list">
+            <div class="working-row"><span>TASK</span><b>release-42</b></div>
+            <div class="working-row"><span>BRANCH</span><b>fix/stream-close</b></div>
+            <div class="working-row"><span>TESTS</span><b class="working-warn">17 / 18</b></div>
+            <div class="working-row"><span>PATCH</span><b class="working-ok">+14 −03</b></div>
+          </div>
+
+          <details class="run-index" open>
+            <summary><span>RUN INDEX</span><span class="run-count">04</span></summary>
+            <div class="run-list">
+              <div class="run-row"><span>#183</span><span>02:10:12</span><span class="status-ok">OK</span><span>21m</span></div>
+              <div class="run-row"><span>#182</span><span>01:48:06</span><span class="status-ok">OK</span><span>34m</span></div>
+              <div class="run-row"><span>#181</span><span>01:22:41</span><span class="status-err">FAIL</span><span>06m</span></div>
+              <div class="run-row"><span>#180</span><span>00:58:19</span><span class="status-ok">OK</span><span>18m</span></div>
+            </div>
+          </details>
+        </aside>
+
+      </div>
+
+      <footer class="composer">
+        <div class="composer-bar">
+          <div class="composer-destination">
+            <span class="composer-label">DESTINATION</span>
+            <span class="destination-value">release-guard <span>/</span> RUN 184</span>
+            <span class="destination-note">TURN 12</span>
+          </div>
+          <div class="composer-modes" role="group" aria-label="Message mode">
+            <button class="mode" type="button">CHAT</button>
+            <button class="mode is-active" type="button">STEER RUN</button>
+            <button class="mode" type="button">NEW RUN</button>
+          </div>
+        </div>
+
+        <div class="composer-entry">
+          <span class="entry-mark">›</span>
+          <span class="entry-placeholder">Add a constraint for this turn</span>
+          <span class="entry-key">⌘ ↵</span>
+          <button class="send-button" type="button">SEND</button>
+        </div>
+
+        <div class="composer-foot">
+          <div class="composer-meta">
+            <span>ATTEMPT 01</span>
+            <span>MODEL atlas-2</span>
+            <span>APPLIES AT NEXT TOOL RESULT</span>
+          </div>
+          <div class="composer-actions">
+            <button class="button" type="button">PAUSE</button>
+            <button class="button button-danger" type="button">STOP RUN</button>
+            <button class="button button-ghost" type="button">RESTART</button>
+          </div>
+        </div>
+      </footer>
+
+    </section>
+
+    <aside class="side-panel" aria-label="Dispatch and system">
+      <div class="side-title">
+        <h2>DISPATCH</h2>
+        <span>02 QUEUED</span>
+      </div>
+
+      <section class="side-block">
+        <div class="side-head">
+          <h3>SCHEDULE</h3>
+          <span>NEXT 24H</span>
+        </div>
+        <div class="schedule-list">
+          <div class="schedule-row">
+            <span class="schedule-time">14:30</span>
+            <span class="schedule-name">pr-review</span>
+            <span class="schedule-tag schedule-tag-error">RETRY</span>
+          </div>
+          <div class="schedule-row">
+            <span class="schedule-time">18:00</span>
+            <span class="schedule-name">nightly-backfill</span>
+            <span class="schedule-tag">ONCE</span>
+          </div>
+          <div class="schedule-row">
+            <span class="schedule-time">04:00</span>
+            <span class="schedule-name">corpus-indexer</span>
+            <span class="schedule-tag">MAINT</span>
+          </div>
+          <div class="schedule-row">
+            <span class="schedule-time">06:42</span>
+            <span class="schedule-name">morning-digest</span>
+            <span class="schedule-tag">DAILY</span>
+          </div>
+          <div class="schedule-row">
+            <span class="schedule-time">12:00</span>
+            <span class="schedule-name">dep-audit</span>
+            <span class="schedule-tag">DAILY</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="side-block">
+        <div class="side-head">
+          <h3>QUEUE</h3>
+          <span>READY 01</span>
+        </div>
+        <div class="queue-list">
+          <div class="queue-row">
+            <span class="queue-pos">01</span>
+            <span class="queue-name">docs-drift</span>
+            <span class="queue-meta">ONESHOT · 04M</span>
+            <span class="queue-state queue-ready">READY</span>
+          </div>
+          <div class="queue-row">
+            <span class="queue-pos">02</span>
+            <span class="queue-name">nightly-backfill</span>
+            <span class="queue-meta">ONESHOT · HOLD</span>
+            <span class="queue-state">HOLD</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="side-block side-events">
+        <div class="side-head">
+          <h3>EVENTS</h3>
+          <span class="live-flag"><i class="lamp lamp-green"></i>LIVE</span>
+        </div>
+        <div class="event-list">
+          <div class="event-row">
+            <span class="event-time">14:21:58</span>
+            <span class="event-body"><b>release-guard</b> <span class="event-type event-type-err">tool.end</span> mix_test · ERR</span>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:21:44</span>
+            <span class="event-body"><b>support-triage</b> <span class="event-type">run.wait</span> inbox</span>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:21:12</span>
+            <span class="event-body"><b>corpus-indexer</b> <span class="event-type">run.pause</span> manual</span>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:20:50</span>
+            <span class="event-body"><b>morning-digest</b> <span class="event-type">context.seal</span> R05</span>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:20:31</span>
+            <span class="event-body"><b>dep-audit</b> <span class="event-type">schedule.next</span> 12:00</span>
+          </div>
+          <div class="event-row">
+            <span class="event-time">14:19:58</span>
+            <span class="event-body"><b>docs-drift</b> <span class="event-type">queue.hold</span> operator</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="side-block">
+        <div class="side-head">
+          <h3>ACTIVITY</h3>
+          <span>60S · 42 CALLS</span>
+        </div>
+        <div class="activity-plot" aria-hidden="true">
+          <i style="--h:14%"></i><i style="--h:22%"></i><i style="--h:18%"></i><i style="--h:31%"></i>
+          <i style="--h:27%"></i><i style="--h:42%"></i><i style="--h:36%"></i><i style="--h:25%"></i>
+          <i style="--h:48%"></i><i style="--h:53%"></i><i style="--h:41%"></i><i style="--h:32%"></i>
+          <i style="--h:57%"></i><i style="--h:64%"></i><i style="--h:58%"></i><i style="--h:44%"></i>
+          <i style="--h:72%"></i><i style="--h:81%"></i><i style="--h:69%"></i><i style="--h:52%"></i>
+          <i style="--h:93%"></i><i class="is-amber" style="--h:88%"></i><i class="is-amber" style="--h:61%"></i><i class="is-green" style="--h:100%"></i>
+        </div>
+        <div class="activity-meta">
+          <span>TOOLS <b>24/M</b></span>
+          <span>MODEL <b>03/M</b></span>
+          <span>WAIT <b>00:18</b></span>
+        </div>
+      </section>
+
+      <section class="side-block">
+        <div class="side-head">
+          <h3>RUNS</h3>
+          <span>04</span>
+        </div>
+        <div class="run-mini-row"><span class="run-mini-id">184</span><span class="run-mini-name">release-guard</span><span class="run-mini-state is-run">RUN 02:14</span></div>
+        <div class="run-mini-row"><span class="run-mini-id">077</span><span class="run-mini-name">support-triage</span><span class="run-mini-state is-run">RUN 00:41</span></div>
+        <div class="run-mini-row"><span class="run-mini-id">012</span><span class="run-mini-name">corpus-indexer</span><span class="run-mini-state is-paused">PAUSED 47:02</span></div>
+        <div class="run-mini-row"><span class="run-mini-id">009</span><span class="run-mini-name">nightly-backfill</span><span class="run-mini-state is-done">DONE 10:24</span></div>
+      </section>
+
+      <section class="side-block side-system">
+        <div class="side-head">
+          <h3>WORKER POOL</h3>
+          <span>12/16</span>
+        </div>
+        <div class="worker-grid" aria-hidden="true">
+          <i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i>
+          <i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i>
+          <i class="is-on"></i><i class="is-on"></i><i class="is-on"></i><i class="is-on"></i>
+          <i></i><i></i><i></i><i></i>
+        </div>
+        <div class="sys-grid">
+          <div><span>MANAGER</span><b>patchbay</b></div>
+          <div><span>WORKERS</span><b>agent</b></div>
+          <div><span>MEMORY</span><b>3.2 GB</b></div>
+          <div><span>TRANSCRIPTS</span><b>88 MB</b></div>
+        </div>
+      </section>
+    </aside>
+
+  </main>
+</div>
+</body>
+</html>

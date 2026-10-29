@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Patchbay Console</title>
+  <link rel="stylesheet" href="console-b.css">
+</head>
+<body>
+  <div class="console">
+
+    <header class="masthead">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="wordmark">PATCHBAY</span>
+        <span class="divider" aria-hidden="true"></span>
+        <span class="view">CONSOLE</span>
+      </div>
+      <div class="mast-right">
+        <span class="control"><span class="lamp is-green"></span>LOCAL CONTROL <b>12ms</b></span>
+        <time class="clock">07:18:42 <small>UTC</small></time>
+      </div>
+    </header>
+
+    <section class="master" aria-label="System status">
+      <div class="master-label">MASTER</div>
+
+      <div class="meters" aria-label="Bus levels">
+        <div class="meter">
+          <span class="meter-label">MODEL</span>
+          <span class="meter-bar" aria-hidden="true">
+            <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="warm"></i><i class="warm"></i><i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span class="meter-val">62</span>
+        </div>
+        <div class="meter">
+          <span class="meter-label">TOOL</span>
+          <span class="meter-bar" aria-hidden="true">
+            <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span class="meter-val">34</span>
+        </div>
+      </div>
+
+      <div class="readout">
+        <span class="lbl">LIVE</span>
+        <span class="val">04</span>
+      </div>
+      <div class="readout">
+        <span class="lbl">WAIT</span>
+        <span class="val">04</span>
+      </div>
+      <div class="readout">
+        <span class="lbl">TOKENS / MIN</span>
+        <span class="val">18.4<small>K</small></span>
+      </div>
+      <div class="readout">
+        <span class="lbl">WORKERS</span>
+        <span class="val">04<small>/06</small></span>
+      </div>
+
+      <div class="syslamps" aria-label="Services">
+        <span class="syslamp"><span class="lamp is-green"></span>MANAGER</span>
+        <span class="syslamp"><span class="lamp is-green"></span>SCHEDULER</span>
+        <span class="syslamp"><span class="lamp is-green"></span>WORKERS</span>
+        <span class="syslamp"><span class="lamp is-green"></span>CONTROL</span>
+      </div>
+    </section>
+
+    <main class="workspace">
+
+      <section class="channels" aria-label="Agent channels">
+        <header class="section-head">
+          <h1>CHANNELS <span>10</span></h1>
+          <div class="filters" role="group" aria-label="Channel filters">
+            <button class="filter is-active" type="button" aria-pressed="true">ALL <span>10</span></button>
+            <button class="filter" type="button" aria-pressed="false">LIVE <span>04</span></button>
+            <button class="filter" type="button" aria-pressed="false">WAIT <span>04</span></button>
+            <button class="filter" type="button" aria-pressed="false">IDLE <span>01</span></button>
+            <button class="filter" type="button" aria-pressed="false">FAIL <span>01</span></button>
+          </div>
+          <div class="sort">SORT <b>CH</b> <span class="caret">▾</span></div>
+        </header>
+
+        <div class="strip-head" aria-hidden="true">
+          <span>CH</span>
+          <span>AGENT</span>
+          <span>ACTIVITY</span>
+          <span>CONTEXT</span>
+          <span>LAST ACTION</span>
+          <span>STATE</span>
+          <span>RUN</span>
+          <span>CTRL</span>
+        </div>
+
+        <ol class="strips" role="listbox" aria-label="Agent channels" aria-orientation="vertical">
+
+          <li class="strip is-selected" role="option" aria-selected="true" tabindex="0">
+            <span class="ch">01</span>
+            <div class="agent">
+              <span class="agent-name">researcher</span>
+              <span class="agent-sub">PERPETUAL · ATTEMPT 3</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-green" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,16 4,10 8,14 12,7 16,12 20,4 24,11 28,15 32,8 36,13 40,5 44,10 48,16 52,9 56,12 60,6 64,14 68,8 72,11 76,7"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 68 percent">
+              <span class="ctx-num">68</span>
+              <span class="ctx-bar"><i style="width:68%"></i></span>
+            </div>
+            <div class="last"><span>http_fetch</span><span class="arrow">→</span><span class="now">exec</span></div>
+            <div class="state">
+              <span class="lamp is-green"></span>
+              <span class="state-copy"><span class="state-name">RUNNING</span><span class="state-sub">02:41:08</span></span>
+            </div>
+            <div class="run"><b>#184</b><span>OPEN</span></div>
+            <div class="rowctl"><button class="mini" type="button">STEER</button><button class="mini" type="button">STOP</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">02</span>
+            <div class="agent">
+              <span class="agent-name">nixos-updater</span>
+              <span class="agent-sub">SCHEDULED · DAILY 07:00</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-amber" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,16 4,15 8,16 12,14 16,16 20,15 24,16 28,13 32,16 36,15 40,16 44,14 48,16 52,15 56,16 60,13 64,16 68,15 72,16 76,14"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 41 percent">
+              <span class="ctx-num">41</span>
+              <span class="ctx-bar"><i style="width:41%"></i></span>
+            </div>
+            <div class="last"><span>git_pull</span><span class="arrow">→</span><span class="warn">wait</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">WAITING</span><span class="state-sub">NEXT 07:00</span></span>
+            </div>
+            <div class="run"><b>#181</b><span>00:12:44</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">RUN</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">03</span>
+            <div class="agent">
+              <span class="agent-name">release-notes</span>
+              <span class="agent-sub">ONE-SHOT · RESULTS 03</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-green" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,14 4,8 8,12 12,5 16,10 20,6 24,13 28,4 32,9 36,12 40,6 44,10 48,14 52,7 56,11 60,4 64,9 68,13 72,6 76,10"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 92 percent">
+              <span class="ctx-num">92</span>
+              <span class="ctx-bar is-hot"><i style="width:92%"></i></span>
+            </div>
+            <div class="last"><span>write_file</span><span class="arrow">→</span><span class="now">finalize</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">FINALIZING</span><span class="state-sub">ARTIFACTS 03</span></span>
+            </div>
+            <div class="run"><b>#77</b><span>00:08:19</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">STOP</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">04</span>
+            <div class="agent">
+              <span class="agent-name">sentry</span>
+              <span class="agent-sub">PERPETUAL · OPEN RUN</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-idle" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,15 4,15 8,15 12,15 16,15 20,15 24,15 28,15 32,15 36,15 40,13 44,15 48,15 52,15 56,15 60,15 64,15 68,15 72,15 76,15"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 12 percent">
+              <span class="ctx-num">12</span>
+              <span class="ctx-bar"><i style="width:12%"></i></span>
+            </div>
+            <div class="last"><span>wait</span></div>
+            <div class="state">
+              <span class="lamp is-dark"></span>
+              <span class="state-copy"><span class="state-name">IDLE</span><span class="state-sub">SINCE 06:22</span></span>
+            </div>
+            <div class="run"><b>#178</b><span>OPEN</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">START</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">05</span>
+            <div class="agent">
+              <span class="agent-name">migration-audit</span>
+              <span class="agent-sub">ONE-SHOT · RESULTS 02</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-red" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,15 4,15 8,15 12,15 16,15 20,15 24,15 28,15 32,15 36,15 40,15 44,15 48,15 52,4 56,15 60,9 64,15 68,15 72,15 76,15"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 57 percent">
+              <span class="ctx-num">57</span>
+              <span class="ctx-bar"><i style="width:57%"></i></span>
+            </div>
+            <div class="last"><span>exec</span><span class="arrow">→</span><span class="err">fail_task</span></div>
+            <div class="state">
+              <span class="lamp is-red"></span>
+              <span class="state-copy"><span class="state-name">FAILED</span><span class="state-sub">EXIT 1</span></span>
+            </div>
+            <div class="run"><b>#12</b><span>00:23:56</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">RETRY</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">06</span>
+            <div class="agent">
+              <span class="agent-name">docs-sweep</span>
+              <span class="agent-sub">SCHEDULED · DAILY 02:00</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-amber" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,16 4,16 8,16 12,16 16,16 20,16 24,16 28,16 32,16 36,16 40,16 44,16 48,16 52,16 56,16 60,16 64,16 68,16 72,16 76,16"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 0 percent">
+              <span class="ctx-num">0</span>
+              <span class="ctx-bar"><i style="width:0%"></i></span>
+            </div>
+            <div class="last"><span>—</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">QUEUED</span><span class="state-sub">START 02:00</span></span>
+            </div>
+            <div class="run"><b>#64</b><span>—</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">CANCEL</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">07</span>
+            <div class="agent">
+              <span class="agent-name">archaeology</span>
+              <span class="agent-sub">PERPETUAL · ATTEMPT 2</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-amber" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,12 4,5 8,9 12,3 16,8 20,4 24,10 28,6 32,12 36,4 40,9 44,5 48,11 52,3 56,8 60,5 64,10 68,4 72,9 76,6"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 81 percent">
+              <span class="ctx-num">81</span>
+              <span class="ctx-bar is-hot"><i style="width:81%"></i></span>
+            </div>
+            <div class="last"><span>memory_recall</span><span class="arrow">→</span><span class="warn">fold</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">COMPACTING</span><span class="state-sub">REV 11→12</span></span>
+            </div>
+            <div class="run"><b>#179</b><span>OPEN</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">STOP</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">08</span>
+            <div class="agent">
+              <span class="agent-name">pr-review</span>
+              <span class="agent-sub">ONE-SHOT · HELD</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-amber" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,15 4,15 8,15 12,13 16,15 20,15 24,14 28,15 32,15 36,15 40,13 44,15 48,15 52,15 56,15 60,15 64,15 68,14 72,15 76,15"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 34 percent">
+              <span class="ctx-num">34</span>
+              <span class="ctx-bar"><i style="width:34%"></i></span>
+            </div>
+            <div class="last"><span>http_fetch</span><span class="arrow">→</span><span class="warn">hold</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">PAUSED</span><span class="state-sub">00:17:22</span></span>
+            </div>
+            <div class="run"><b>#31</b><span>HELD</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">RESUME</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">09</span>
+            <div class="agent">
+              <span class="agent-name">issue-triage</span>
+              <span class="agent-sub">PERPETUAL · ATTEMPT 5</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-green" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,13 4,7 8,11 12,5 16,9 20,6 24,12 28,8 32,14 36,7 40,10 44,5 48,11 52,8 56,13 60,6 64,10 68,7 72,12 76,8"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 47 percent">
+              <span class="ctx-num">47</span>
+              <span class="ctx-bar"><i style="width:47%"></i></span>
+            </div>
+            <div class="last"><span>http_fetch</span><span class="arrow">→</span><span class="now">exec</span></div>
+            <div class="state">
+              <span class="lamp is-green"></span>
+              <span class="state-copy"><span class="state-name">RUNNING</span><span class="state-sub">00:31:20</span></span>
+            </div>
+            <div class="run"><b>#180</b><span>OPEN</span></div>
+            <div class="rowctl"><button class="mini" type="button">STEER</button><button class="mini" type="button">STOP</button></div>
+          </li>
+
+          <li class="strip" role="option" aria-selected="false" tabindex="0">
+            <span class="ch">10</span>
+            <div class="agent">
+              <span class="agent-name">schema-sync</span>
+              <span class="agent-sub">SCHEDULED · DAILY 18:00</span>
+            </div>
+            <div class="trace-wrap">
+              <svg class="trace trace-amber" viewBox="0 0 76 20" preserveAspectRatio="none" aria-hidden="true">
+                <polyline points="0,16 4,16 8,15 12,16 16,14 20,16 24,15 28,16 32,15 36,16 40,14 44,16 48,15 52,16 56,16 60,15 64,16 68,14 72,16 76,15"/>
+              </svg>
+            </div>
+            <div class="ctx" aria-label="Context 22 percent">
+              <span class="ctx-num">22</span>
+              <span class="ctx-bar"><i style="width:22%"></i></span>
+            </div>
+            <div class="last"><span>git_pull</span><span class="arrow">→</span><span class="warn">wait</span></div>
+            <div class="state">
+              <span class="lamp is-amber"></span>
+              <span class="state-copy"><span class="state-name">WAITING</span><span class="state-sub">NEXT 18:00</span></span>
+            </div>
+            <div class="run"><b>#58</b><span>00:04:12</span></div>
+            <div class="rowctl"><button class="mini" type="button">OPEN</button><button class="mini" type="button">RUN</button></div>
+          </li>
+
+        </ol>
+
+        <footer class="channels-foot">
+          <span class="foot-item"><span class="lamp is-amber"></span>NEXT <b>18:00</b> schema-sync</span>
+          <span class="foot-item">NEXT <b>02:00</b> docs-sweep</span>
+          <span class="foot-item">NEXT <b>07:00</b> nixos-updater</span>
+          <span class="foot-sep"></span>
+          <span class="foot-item">QUEUE <b>02</b></span>
+          <span class="foot-item push">DRAIN <b>0.42/s</b></span>
+        </footer>
+      </section>
+
+      <aside class="inspector" aria-label="Selected agent inspector">
+        <header class="insp-head">
+          <div class="insp-kicker">
+            <span class="sel-tag">SEL 01</span>
+            <span class="insp-kind">PERPETUAL</span>
+            <span class="insp-run">RUN #184 · ATT 3</span>
+          </div>
+          <div class="insp-title">
+            <h2>researcher</h2>
+            <span class="state-pill">RUNNING</span>
+          </div>
+          <div class="transport">
+            <button class="btn" type="button">PAUSE</button>
+            <button class="btn" type="button">STOP</button>
+            <button class="btn btn-fail" type="button">FAIL</button>
+          </div>
+        </header>
+
+        <section class="context" aria-label="Context use">
+          <div class="ctx-top">
+            <span class="label">CONTEXT</span>
+            <span class="ctx-tokens">68,142 / 100,000 TOK</span>
+            <span class="ctx-pct">68<small>%</small></span>
+          </div>
+          <div class="meter-wide" role="img" aria-label="Context 68 percent, limit 80 percent">
+            <span class="fill" style="width:68%"></span>
+            <span class="limit"></span>
+          </div>
+          <div class="ctx-meta">
+            <span>REV <b>12</b></span>
+            <span>ARCHIVE <b>11</b></span>
+            <span>COMPACT IN <b>11,858</b></span>
+            <span>LIMIT <b>80%</b></span>
+          </div>
+        </section>
+
+        <section class="tools" aria-label="Tool calls">
+          <header class="panel-head">
+            <h3>TOOL CALLS <span>34</span></h3>
+            <span class="panel-meta"><span class="lamp is-green"></span>LIVE</span>
+          </header>
+          <div class="tool-cols" aria-hidden="true">
+            <span>SEQ</span><span>TIME</span><span>CALL</span><span>SRC</span><span>ST</span><span>DUR</span>
+          </div>
+          <ol class="tool-list">
+            <li class="tool-row is-run">
+              <span class="t-seq">034</span>
+              <span class="t-time">07:18:41</span>
+              <span class="t-call">exec <em>nix build .#docs</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-run">RUN</span>
+              <span class="t-dur">1.0s</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">033</span>
+              <span class="t-time">07:18:24</span>
+              <span class="t-call">write_file <em>notes/changelog.md</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">21ms</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">032</span>
+              <span class="t-time">07:18:07</span>
+              <span class="t-call">http_fetch <em>github.com/patchbay/releases</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">311ms</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">031</span>
+              <span class="t-time">07:17:58</span>
+              <span class="t-call">memory_recall <em>"v0.14 blockers"</em></span>
+              <span class="t-src" title="manager">M</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">8ms</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">030</span>
+              <span class="t-time">07:17:51</span>
+              <span class="t-call">exec <em>rg -n TODO docs</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">92ms</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">029</span>
+              <span class="t-time">07:17:44</span>
+              <span class="t-call">read_file <em>docs/index.md</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">38ms</span>
+            </li>
+            <li class="tool-row">
+              <span class="t-seq">028</span>
+              <span class="t-time">07:17:31</span>
+              <span class="t-call">memory_recall <em>"release cadence"</em></span>
+              <span class="t-src" title="manager">M</span>
+              <span class="t-state st-ok">OK</span>
+              <span class="t-dur">12ms</span>
+            </li>
+            <li class="tool-row is-err">
+              <span class="t-seq">027</span>
+              <span class="t-time">07:17:22</span>
+              <span class="t-call">exec <em>nix build .#cli</em></span>
+              <span class="t-src" title="worker">W</span>
+              <span class="t-state st-err">ERR</span>
+              <span class="t-dur">1.04s</span>
+            </li>
+          </ol>
+        </section>
+
+        <section class="stream" aria-label="Activity and chat">
+          <header class="panel-head">
+            <h3>ACTIVITY</h3>
+            <span class="panel-meta">RUN #184</span>
+          </header>
+          <div class="feed">
+            <article class="ev ev-event">
+              <time>06:52:18</time>
+              <div class="ev-body"><span class="ev-role">COMPACT</span>REV 11 → 12 · 41,203 TOK SEALED</div>
+            </article>
+            <article class="ev ev-agent">
+              <time>07:17:51</time>
+              <div class="ev-body"><span class="ev-role">AGENT</span>Context folded. Three blockers remain.</div>
+            </article>
+            <article class="ev ev-steer">
+              <time>07:18:07</time>
+              <div class="ev-body"><span class="ev-role">OPERATOR → RUN #184</span>Skip the migration section. Ship the changelog.</div>
+            </article>
+            <article class="ev ev-agent">
+              <time>07:18:39</time>
+              <div class="ev-body"><span class="ev-role">AGENT</span>Changelog drafted. Build in progress.</div>
+            </article>
+            <article class="ev ev-tool is-run">
+              <time>07:18:41</time>
+              <div class="ev-body"><span class="ev-role">TOOL · W</span>exec nix build .#docs <b class="st-run">RUN 1.0s</b></div>
+            </article>
+          </div>
+        </section>
+
+        <footer class="composer">
+          <div class="dest">
+            <span class="label">DESTINATION</span>
+            <button class="dest-select" type="button">STEER THIS RUN <b>#184</b> <span class="caret">▾</span></button>
+          </div>
+          <div class="input-row">
+            <input type="text" placeholder="Message researcher…" aria-label="Message researcher">
+            <button class="btn-send" type="button">SEND</button>
+          </div>
+          <div class="composer-foot">
+            <span>ATTEMPT 3 · WORKER A</span>
+            <span>QUEUE 0</span>
+            <span>ENTER TO SEND</span>
+          </div>
+        </footer>
+      </aside>
+
+    </main>
+  </div>
+</body>
+</html>

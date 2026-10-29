@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Definition · researcher</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<h1 class="sr-only">Agent definition: researcher</h1>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <span class="brand-text"><strong>CONFIG</strong><span>AGENT DEFINITION</span></span>
+    </div>
+    <nav class="crumbs mono" aria-label="Definition path">
+      <span class="muted">config/agents/</span><b>researcher</b><span class="muted">/agent.toml</span>
+    </nav>
+    <div class="top-actions">
+      <span class="state mono"><i class="lamp green"></i>REV 7F3C1A2</span>
+      <span class="state mono hide-sm"><i class="lamp blue"></i>SNAPSHOT</span>
+      <button class="btn" type="button">Validate</button>
+      <button class="btn btn-solid" type="button">Save</button>
+    </div>
+  </header>
+
+  <div class="specbar mono">
+    <span class="spec"><span>ID</span><b>researcher</b></span>
+    <span class="spec"><span>FORMAT</span><b>1</b></span>
+    <span class="spec"><span>MODEL</span><b>default / deepseek-v4.1-flash</b></span>
+    <span class="spec"><span>LIFECYCLE</span><b><i class="lamp green"></i>scheduled · 0 7 * * *</b></span>
+    <span class="spec"><span>TOOLKITS</span><b>3 + 1 alt</b></span>
+    <span class="spec"><span>TOOLS</span><b>9</b></span>
+    <span class="spec"><span>RESULTS</span><b>4</b></span>
+    <span class="spec push"><span>STATE</span><b class="valid"><i class="lamp green"></i>VALID</b></span>
+  </div>
+
+  <main class="shell">
+
+    <aside class="files" aria-label="Definition files">
+      <div class="side-head">
+        <span class="eyebrow">Directory</span>
+        <span class="mono tiny">agents/researcher</span>
+      </div>
+      <ul class="tree">
+        <li class="file current"><span class="jack blue"></span><span class="name mono">agent.toml</span><span class="meta mono">7f3c1a2</span></li>
+        <li class="dir"><span class="name mono">prompts/</span><span class="meta mono">2</span></li>
+        <li class="file child"><span class="tick"></span><span class="name mono">00-identity.md</span><span class="meta mono">1.2k</span></li>
+        <li class="file child"><span class="tick"></span><span class="name mono">10-behavior.md</span><span class="meta mono">3.4k</span></li>
+        <li class="file child off"><span class="tick"></span><span class="name mono">20-draft.md.bak</span><span class="meta mono">ignored</span></li>
+        <li class="dir"><span class="name mono">scripts/</span><span class="meta mono">1</span></li>
+        <li class="file child"><span class="tick"></span><span class="name mono">summarize-source</span><span class="meta mono">exec</span></li>
+        <li class="file"><span class="tick"></span><span class="name mono">notes.md</span><span class="meta mono">—</span></li>
+      </ul>
+
+      <div class="side-block">
+        <span class="eyebrow">Prompt order</span>
+        <ol class="order">
+          <li><span class="n mono">1</span><span class="name mono">00-identity.md</span><span class="meta mono">1.2k</span></li>
+          <li><span class="n mono">2</span><span class="name mono">10-behavior.md</span><span class="meta mono">3.4k</span></li>
+        </ol>
+      </div>
+
+      <div class="side-block">
+        <span class="eyebrow">Load state</span>
+        <dl class="kv mono">
+          <div><dt>revision</dt><dd>7f3c1a2</dd></div>
+          <div><dt>loaded</dt><dd>14:07:52</dd></div>
+          <div><dt>writes</dt><dd>atomic</dd></div>
+          <div><dt>apply</dt><dd>next run</dd></div>
+        </dl>
+      </div>
+    </aside>
+
+    <section class="workspace" aria-label="Definition editor">
+      <input class="view-input" type="radio" name="view" id="v-source" checked>
+      <input class="view-input" type="radio" name="view" id="v-structured">
+      <input class="view-input" type="radio" name="view" id="v-resolved">
+
+      <div class="viewbar">
+        <label class="viewtab" for="v-source"><i class="lamp"></i>Source<span class="tab-sub mono">TOML</span></label>
+        <label class="viewtab" for="v-structured"><i class="lamp"></i>Structured<span class="tab-sub mono">FIELDS</span></label>
+        <label class="viewtab" for="v-resolved"><i class="lamp"></i>Resolved<span class="tab-sub mono">LOADED</span></label>
+        <span class="viewnote mono">agent.toml · 78 lines · rev 7f3c1a2</span>
+      </div>
+
+      <div class="view-stage">
+
+        <section class="view-panel" id="panel-source" aria-label="Source view">
+          <div class="panel-head">
+            <div>
+              <h2>agent.toml</h2>
+            </div>
+            <div class="head-meta mono">
+              <span class="tag">TOML</span>
+            </div>
+          </div>
+          <div class="code" tabindex="0" aria-label="TOML source">
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">format-version</span> = <span class="num">1</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">id</span> = <span class="str">"researcher"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[model]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">provider</span> = <span class="str">"default"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">name</span> = <span class="str">"deepseek-v4.1-flash"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">reasoning</span> = <span class="str">"medium"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[lifecycle]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">kind</span> = <span class="str">"scheduled"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">schedule</span> = <span class="str">"0 7 * * *"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">overlap</span> = <span class="str">"forbid"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">catch-up</span> = <span class="str">"once"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[environment]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">packages</span> = [<span class="str">"git"</span>, <span class="str">"ripgrep"</span>]</span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[toolkits]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">toolkit</span> = <span class="str">"memory-file-io"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[toolkits.config]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">persistence</span> = <span class="str">"run"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[toolkits]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">toolkit</span> = <span class="str">"personal-memory"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[toolkits.config]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">namespace</span> = <span class="str">"researcher"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[toolkits]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">toolkit</span> = <span class="str">"fixed-operations"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[toolkits.operations]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">name</span> = <span class="str">"build"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">argv</span> = [<span class="str">"nix"</span>, <span class="str">"build"</span>, <span class="str">"{%workspace}#{target}"</span>]</span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[toolkits.operations.arguments.target]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">type</span> = <span class="str">"string"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[toolkits.operations]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">name</span> = <span class="str">"check"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">argv</span> = [<span class="str">"check-workspace"</span>, <span class="str">"{%workspace}"</span>]</span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[context]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">between-runs</span> = <span class="str">"handoff"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">prior-runs</span> = <span class="str">"queryable"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">restore-interrupted</span> = <span class="str">"checkpoint"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[teardown]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">workspace</span> = <span class="str">"destroy"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[budgets]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">run-seconds</span> = <span class="num">1800</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">tokens</span> = <span class="num">1000000</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[results]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">id</span> = <span class="str">"pull-request"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">form</span> = <span class="str">"url"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">required</span> = <span class="kw">false</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">label</span> = <span class="str">"The GitHub URL of your submitted pull request"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[results]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">id</span> = <span class="str">"patch-file"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">form</span> = <span class="str">"file"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">required-by</span> = <span class="str">"pull-request"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">extensions</span> = [<span class="str">"patch"</span>, <span class="str">"diff"</span>, <span class="str">""</span>]</span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">label</span> = <span class="str">"A patch containing your pull request's changes"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[results]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">id</span> = <span class="str">"status-message"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">form</span> = <span class="str">"prose"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">label</span> = <span class="str">"Report on what has changed"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"> </span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="sect">[[results]]</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">id</span> = <span class="str">"lines-added"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">form</span> = <span class="str">"number"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">required-by</span> = <span class="str">"pull-request"</span></span></div>
+            <div class="code-line"><span class="ln"></span><span class="lc"><span class="key">label</span> = <span class="str">"Total line change in tracked files"</span></span></div>
+          </div>
+          <div class="source-foot mono">
+            <span>UTF-8</span><span>LF</span><span>78 lines</span>
+            <span class="push">source digest 4c1e9a…</span>
+          </div>
+        </section>
+
+        <section class="view-panel" id="panel-structured" aria-label="Structured view">
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">01</span>
+              <h3>Model</h3>
+              <span class="block-meta mono">default / deepseek-v4.1-flash</span>
+            </header>
+            <div class="fields cols-3">
+              <div class="field"><span class="k">Provider</span><span class="v mono">default</span></div>
+              <div class="field"><span class="k">Model</span><span class="v mono">deepseek-v4.1-flash</span></div>
+              <div class="field">
+                <span class="k">Reasoning</span>
+                <span class="seg mono"><span>low</span><span class="on">medium</span><span>high</span></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">02</span>
+              <h3>Lifecycle</h3>
+              <span class="block-meta mono"><i class="lamp green"></i>scheduled · next 07:00</span>
+            </header>
+            <div class="fields cols-5">
+              <div class="field"><span class="k">Kind</span><span class="v mono">scheduled</span></div>
+              <div class="field"><span class="k">Schedule</span><span class="v mono">0 7 * * *</span></div>
+              <div class="field"><span class="k">Overlap</span><span class="v mono">forbid</span></div>
+              <div class="field"><span class="k">Catch-up</span><span class="v mono">once</span></div>
+              <div class="field"><span class="k">Recovery</span><span class="v mono">checkpoint</span></div>
+            </div>
+            <div class="flow-label mono"><span>Init · 7 phases</span></div>
+            <div class="flow">
+              <span class="phase init"><span class="pn mono">01</span><span class="pname">load</span></span>
+              <span class="phase init"><span class="pn mono">02</span><span class="pname">recover</span></span>
+              <span class="phase init"><span class="pn mono">03</span><span class="pname">allocate</span></span>
+              <span class="phase init"><span class="pn mono">04</span><span class="pname">toolkits</span></span>
+              <span class="phase init"><span class="pn mono">05</span><span class="pname">prompts</span></span>
+              <span class="phase init"><span class="pn mono">06</span><span class="pname">context</span></span>
+              <span class="phase init ready"><span class="pn mono">07</span><span class="pname">ready</span></span>
+            </div>
+            <div class="flow-label mono"><span>Final · 4 phases</span><span>teardown reverse</span></div>
+            <div class="flow flow-final">
+              <span class="phase final"><span class="pn mono">08</span><span class="pname">finalize</span></span>
+              <span class="phase final"><span class="pn mono">09</span><span class="pname">extract</span></span>
+              <span class="phase final"><span class="pn mono">10</span><span class="pname">teardown</span></span>
+              <span class="phase final"><span class="pn mono">11</span><span class="pname">terminal</span></span>
+            </div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">03</span>
+              <h3>Toolkits</h3>
+              <span class="block-meta mono">3 selected + 1 alt · 5 slots · 9 tools</span>
+            </header>
+
+            <div class="slotbar">
+              <span class="slot full"><i class="jack blue"></i>files<b>1</b></span>
+              <span class="slot full"><i class="jack green"></i>recall<b>1</b></span>
+              <span class="slot full"><i class="jack amber"></i>exec<b>1</b></span>
+              <span class="slot full"><i class="jack cyan"></i>workspace<b>1</b></span>
+              <span class="slot empty"><i class="jack"></i>web<b>0</b></span>
+            </div>
+
+            <div class="bus">
+              <div class="busbar mono">
+                <span>Slot bus</span>
+              </div>
+              <div class="ruler" aria-hidden="true"></div>
+              <div class="tool-scroll" tabindex="0" aria-label="Toolkit providers, horizontally scrollable">
+
+                <article class="tool" style="--w:250px">
+                  <header>
+                    <i class="jack blue"></i>
+                    <span class="name">memory-file-io</span>
+                    <span class="tag">RUN</span>
+                  </header>
+                  <div class="chips"><span class="chip">files</span><span class="chip">run-local</span></div>
+                  <ul class="tools">
+                    <li>read_file</li>
+                    <li>write_file</li>
+                    <li>list_files</li>
+                    <li>create_dir</li>
+                  </ul>
+                  <div class="cfg mono">persistence = "run"</div>
+                </article>
+
+                <article class="tool" style="--w:292px">
+                  <header>
+                    <i class="jack green"></i>
+                    <span class="name">personal-memory</span>
+                    <span class="tag">AGENT</span>
+                  </header>
+                  <div class="chips"><span class="chip">recall</span><span class="chip">agent-lifetime</span></div>
+                  <ul class="tools">
+                    <li>recall</li>
+                    <li>remember</li>
+                    <li>forget</li>
+                  </ul>
+                  <div class="cfg mono">namespace = "researcher"</div>
+                </article>
+
+                <article class="tool" style="--w:436px">
+                  <header>
+                    <i class="jack amber"></i>
+                    <span class="name">fixed-operations</span>
+                    <span class="tag">RUN</span>
+                  </header>
+                  <div class="chips"><span class="chip">exec</span><span class="chip">workspace</span><span class="chip">composite</span></div>
+                  <div class="ops">
+                    <div class="op"><span class="op-name mono">build</span><span class="op-argv mono">nix build {%workspace}#{target}</span></div>
+                    <div class="op"><span class="op-name mono">check</span><span class="op-argv mono">check-workspace {%workspace}</span></div>
+                  </div>
+                  <div class="cfg mono">target : string</div>
+                </article>
+
+                <article class="tool alt" style="--w:230px">
+                  <header>
+                    <i class="jack"></i>
+                    <span class="name">memory-sqlite</span>
+                    <span class="tag tag-alt">ALT</span>
+                  </header>
+                  <div class="chips"><span class="chip">recall</span></div>
+                  <ul class="tools">
+                    <li>recall</li>
+                    <li>remember</li>
+                    <li>query</li>
+                  </ul>
+                  <div class="cfg mono">slot conflict</div>
+                </article>
+
+                <button class="tool-add mono" type="button">+ provider</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">04</span>
+              <h3>Prompt directory</h3>
+              <span class="block-meta mono">2 enabled</span>
+            </header>
+            <table class="ptable">
+              <thead>
+                <tr><th>Order</th><th>File</th><th>Size</th><th>Digest</th><th>State</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="mono n">1</td><td class="mono file-cell">00-identity.md</td><td class="mono">1.2 kB</td><td class="mono dim">a41f03</td><td><span class="tag tag-green">enabled</span></td></tr>
+                <tr><td class="mono n">2</td><td class="mono file-cell">10-behavior.md</td><td class="mono">3.4 kB</td><td class="mono dim">9c02b7</td><td><span class="tag tag-green">enabled</span></td></tr>
+                <tr class="off"><td class="mono n">—</td><td class="mono file-cell">20-draft.md.bak</td><td class="mono">0.8 kB</td><td class="mono dim">77de11</td><td><span class="tag">ignored · not .md</span></td></tr>
+              </tbody>
+            </table>
+            <div class="asm-head mono"><span>Assembly</span><span>00 → 10 · 4.6 kB</span></div>
+            <div class="asm" aria-hidden="true"><i class="seg-a" style="width:26%"></i><i class="seg-b" style="width:74%"></i></div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">05</span>
+              <h3>Environment</h3>
+              <span class="block-meta mono">2 packages · 3 scripts</span>
+            </header>
+            <div class="split">
+              <div class="sub">
+                <div class="sub-head"><span class="eyebrow">Nix packages</span><span class="tag">2</span></div>
+                <div class="list-row"><span class="mono">nixpkgs#git</span><span class="mono dim">2.47.0</span><i class="lamp green"></i></div>
+                <div class="list-row"><span class="mono">nixpkgs#ripgrep</span><span class="mono dim">14.1.1</span><i class="lamp green"></i></div>
+              </div>
+              <div class="sub">
+                <div class="sub-head"><span class="eyebrow">Scripts on PATH</span><span class="tag">3</span></div>
+                <div class="list-row"><span class="mono">check-workspace</span><span class="mono dim">shared</span><i class="lamp green"></i></div>
+                <div class="list-row"><span class="mono">publish-update</span><span class="mono dim">shared</span><i class="lamp green"></i></div>
+                <div class="list-row"><span class="mono">summarize-source</span><span class="mono dim">agent</span><i class="lamp green"></i></div>
+              </div>
+            </div>
+            <div class="pathbar mono">
+              <span class="lbl">PATH</span>
+              <span class="pstep">nix packages</span><span class="arrow">→</span>
+              <span class="pstep">shared scripts</span><span class="arrow">→</span>
+              <span class="pstep">agent scripts</span>
+            </div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">06</span>
+              <h3>Results</h3>
+              <span class="block-meta mono">4 slots · 2 dependencies</span>
+            </header>
+            <table class="ptable results">
+              <thead>
+                <tr><th>ID</th><th>Form</th><th>Rule</th><th>Model-facing label</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="mono id-cell">pull-request</td><td class="mono">url</td><td><span class="tag tag-amber">optional</span></td><td class="label-cell">The GitHub URL of your submitted pull request</td></tr>
+                <tr><td class="mono id-cell">patch-file</td><td class="mono">file</td><td class="mono req">required-by <b>pull-request</b></td><td class="label-cell">A patch containing your pull request's changes</td></tr>
+                <tr><td class="mono id-cell">status-message</td><td class="mono">prose</td><td><span class="tag tag-default">required · default</span></td><td class="label-cell">Report on what has changed</td></tr>
+                <tr><td class="mono id-cell">lines-added</td><td class="mono">number</td><td class="mono req">required-by <b>pull-request</b></td><td class="label-cell">Total line change in tracked files</td></tr>
+              </tbody>
+            </table>
+            <div class="depbar mono">
+              <i class="jack amber"></i>
+              <span class="lbl">DEPENDENCY</span>
+              <span>patch-file → pull-request</span>
+              <span class="sep">·</span>
+              <span>lines-added → pull-request</span>
+            </div>
+          </section>
+
+          <section class="block">
+            <header class="block-head">
+              <span class="idx mono">07</span>
+              <h3>Run policy</h3>
+            </header>
+            <div class="policy">
+              <div class="policy-col">
+                <span class="eyebrow">Context</span>
+                <div class="kv-row mono"><span>between-runs</span><b>handoff</b></div>
+                <div class="kv-row mono"><span>prior-runs</span><b>queryable</b></div>
+                <div class="kv-row mono"><span>restore-interrupted</span><b>checkpoint</b></div>
+              </div>
+              <div class="policy-col">
+                <span class="eyebrow">Budgets</span>
+                <div class="budget">
+                  <div class="kv-row mono"><span>run-seconds</span><b>1800</b></div>
+                  <div class="gauge"><i style="width:0"></i></div>
+                </div>
+                <div class="budget">
+                  <div class="kv-row mono"><span>tokens</span><b>1,000,000</b></div>
+                  <div class="gauge"><i style="width:0"></i></div>
+                </div>
+              </div>
+              <div class="policy-col">
+                <span class="eyebrow">Teardown</span>
+                <div class="kv-row mono"><span>workspace</span><b>destroy</b></div>
+                <div class="notice-row mono"><i class="lamp amber"></i>results extracted first</div>
+                <div class="kv-row mono"><span>toolkits</span><b>reverse order</b></div>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="view-panel" id="panel-resolved" aria-label="Resolved view">
+          <div class="panel-head">
+            <div>
+              <span class="eyebrow">Resolved at load</span>
+              <h2>researcher</h2>
+            </div>
+            <div class="head-meta mono"><span class="tag tag-green">VALID</span><span>7 checks</span><span>2 notices</span></div>
+          </div>
+
+          <div class="resolved-summary">
+            <div><span class="k">Resolution</span><b><i class="lamp green"></i>VALID</b></div>
+            <div><span class="k">Source digest</span><b class="mono">sha256:4c1e9a…</b></div>
+            <div><span class="k">Prompt digest</span><b class="mono">sha256:8f0c2d…</b></div>
+            <div><span class="k">Required defaults</span><b class="mono">1</b></div>
+          </div>
+
+          <div class="resolved-grid">
+
+            <section class="rcell">
+              <header class="rcell-head"><span class="idx mono">A</span><h3>Prompt assembly</h3><span class="mono dim">2 files</span></header>
+              <ol class="assembly">
+                <li><span class="n mono">01</span><span class="file mono">00-identity.md</span><span class="bytes mono">1,214 B</span><span class="sha mono">a41f03</span></li>
+                <li><span class="n mono">02</span><span class="file mono">10-behavior.md</span><span class="bytes mono">3,398 B</span><span class="sha mono">9c02b7</span></li>
+              </ol>
+              <div class="rcell-foot mono">lexical · 4,612 B · ~1,153 tok · 8f0c2d…</div>
+            </section>
+
+            <section class="rcell">
+              <header class="rcell-head"><span class="idx mono">B</span><h3>Toolkit slots</h3><span class="mono dim">4 / 5 bound</span></header>
+              <table class="rtable">
+                <thead><tr><th>Slot</th><th>Provider</th><th>Lifetime</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">files</td><td class="mono">memory-file-io</td><td class="mono dim">run</td></tr>
+                  <tr><td class="mono">recall</td><td class="mono">personal-memory</td><td class="mono dim">agent</td></tr>
+                  <tr><td class="mono">exec</td><td class="mono">fixed-operations</td><td class="mono dim">run</td></tr>
+                  <tr><td class="mono">workspace</td><td class="mono">fixed-operations</td><td class="mono dim">run</td></tr>
+                  <tr class="off"><td class="mono">web</td><td class="mono">—</td><td class="mono dim">unbound</td></tr>
+                </tbody>
+              </table>
+              <div class="rcell-foot mono"><i class="lamp amber"></i>alt recall · memory-sqlite</div>
+            </section>
+
+            <section class="rcell wide">
+              <header class="rcell-head"><span class="idx mono">C</span><h3>Environment realization</h3><span class="mono dim">2 packages · 3 scripts</span></header>
+              <div class="env-grid">
+                <div>
+                  <span class="eyebrow">Packages</span>
+                  <div class="kv-row mono"><span>git</span><b>…-git-2.47.0</b></div>
+                  <div class="kv-row mono"><span>ripgrep</span><b>…-ripgrep-14.1.1</b></div>
+                </div>
+                <div>
+                  <span class="eyebrow">Scripts</span>
+                  <div class="kv-row mono"><span>check-workspace</span><b>shared/scripts</b></div>
+                  <div class="kv-row mono"><span>publish-update</span><b>shared/scripts</b></div>
+                  <div class="kv-row mono"><span>summarize-source</span><b>agent/scripts</b></div>
+                </div>
+                <div>
+                  <span class="eyebrow">PATH order</span>
+                  <div class="pathstack mono">
+                    <span>1 · nix env /bin</span>
+                    <span>2 · shared/scripts</span>
+                    <span>3 · agent/scripts</span>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="rcell wide">
+              <header class="rcell-head"><span class="idx mono">D</span><h3>Execution plan</h3></header>
+              <div class="plan">
+                <div>
+                  <span class="eyebrow">Initialization</span>
+                  <ol class="steplist mono">
+                    <li><span class="n">01</span>allocate run + workspace</li>
+                    <li><span class="n">02</span>realize Nix environment</li>
+                    <li><span class="n">03</span>init memory-file-io <em>files</em></li>
+                    <li><span class="n">04</span>init personal-memory <em>recall</em></li>
+                    <li><span class="n">05</span>init fixed-operations <em>exec · workspace</em></li>
+                    <li><span class="n">06</span>assemble prompts 00 → 10</li>
+                    <li><span class="n">07</span>restore checkpoint → ready</li>
+                  </ol>
+                </div>
+                <div>
+                  <span class="eyebrow">Finalization · reverse</span>
+                  <ol class="steplist mono">
+                    <li><span class="n">01</span>finalize context</li>
+                    <li><span class="n">02</span>verify + copy file results</li>
+                    <li><span class="n">03</span>commit terminal result</li>
+                    <li><span class="n">04</span>teardown fixed-operations</li>
+                    <li><span class="n">05</span>teardown personal-memory</li>
+                    <li><span class="n">06</span>teardown memory-file-io</li>
+                    <li><span class="n">07</span>destroy workspace → terminal</li>
+                  </ol>
+                </div>
+              </div>
+            </section>
+
+            <section class="rcell">
+              <header class="rcell-head"><span class="idx mono">E</span><h3>Results contract</h3></header>
+              <table class="rtable">
+                <thead><tr><th>ID</th><th>Form</th><th>Rule</th></tr></thead>
+                <tbody>
+                  <tr><td class="mono">pull-request</td><td class="mono">url</td><td><span class="tag tag-amber">optional</span></td></tr>
+                  <tr><td class="mono">patch-file</td><td class="mono">file</td><td class="mono">by pull-request</td></tr>
+                  <tr><td class="mono">status-message</td><td class="mono">prose</td><td><span class="tag tag-default">required · default</span></td></tr>
+                  <tr><td class="mono">lines-added</td><td class="mono">number</td><td class="mono">by pull-request</td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section class="rcell">
+              <header class="rcell-head"><span class="idx mono">F</span><h3>Derived notes</h3></header>
+              <div class="notes">
+                <div class="kv-row mono"><span>required default</span><b>1 · status-message</b></div>
+                <div class="kv-row mono"><span>hooks</span><b>default init + final</b></div>
+                <div class="kv-row mono"><span>snapshot</span><b>applies next run</b></div>
+                <div class="kv-row mono"><span>conflicts</span><b>0</b></div>
+                <div class="kv-row mono"><span>web slot</span><b>unbound</b></div>
+              </div>
+              <div class="rcell-foot mono">7 checks · 0 errors · 2 notices</div>
+            </section>
+
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <aside class="rail" aria-label="Validation">
+      <div class="rail-head">
+        <span class="eyebrow">Validation</span>
+        <div class="score">
+          <span class="big mono">7<small>/7</small></span>
+          <span class="verdict mono"><i class="lamp green"></i>VALID</span>
+        </div>
+        <div class="rail-sub mono">self-test · rev 7f3c1a2</div>
+      </div>
+
+      <ul class="checks">
+        <li class="ok">
+          <span class="num mono">01</span><span class="ck mono">SCHEMA</span><span class="res mono">PASS</span>
+          <p class="mono">format-version 1 · required fields</p>
+        </li>
+        <li class="ok">
+          <span class="num mono">02</span><span class="ck mono">RESULT REFERENCES</span><span class="res mono">PASS</span>
+          <p class="mono">2 dependencies · no cycles</p>
+        </li>
+        <li class="ok">
+          <span class="num mono">03</span><span class="ck mono">TOOLKIT SLOTS</span><span class="res mono">PASS</span>
+          <p class="mono">4 / 5 bound · 1 alternate</p>
+        </li>
+        <li class="ok">
+          <span class="num mono">04</span><span class="ck mono">PROMPT FILES</span><span class="res mono">PASS</span>
+          <p class="mono">2 enabled · lexical order</p>
+        </li>
+        <li class="notice">
+          <span class="num mono">05</span><span class="ck mono">ENVIRONMENT</span><span class="res mono">NOTICE</span>
+          <p class="mono">packages realized at run start</p>
+        </li>
+        <li class="notice">
+          <span class="num mono">06</span><span class="ck mono">TEARDOWN ORDER</span><span class="res mono">NOTICE</span>
+          <p class="mono">file results copied before cleanup</p>
+        </li>
+        <li class="ok">
+          <span class="num mono">07</span><span class="ck mono">REVISION</span><span class="res mono">PASS</span>
+          <p class="mono">disk matches loaded 7f3c1a2</p>
+        </li>
+      </ul>
+
+      <div class="rail-foot">
+        <div class="kv-row mono"><span>Snapshot</span><b>7f3c1a2</b></div>
+        <div class="kv-row mono"><span>Changes</span><b>apply next run</b></div>
+        <div class="kv-row mono"><span>Writes</span><b>atomic · checked</b></div>
+      </div>
+    </aside>
+
+  </main>
+
+  <footer class="statusbar mono">
+    <span>TOML</span><span>UTF-8</span><span>LF</span><span>78 LINES</span>
+    <span class="divider"></span>
+    <span>2 PROMPTS</span><span>9 TOOLS</span><span>4 RESULTS</span>
+    <span class="push">SOURCE 4C1E9A</span><span>LOADED 14:07:52</span><span>AUTOSAVE OFF</span>
+  </footer>
+
+</div>
+</body>
+</html>

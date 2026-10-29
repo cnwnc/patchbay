@@ -1,0 +1,4 @@
+name = "filesystem"
+description = "Built-in file tools confined to a configured directory root."
+native = "filesystem"
+tools = ["read_file", "list_directory", "write_file", "edit_file"]

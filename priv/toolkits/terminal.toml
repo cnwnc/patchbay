@@ -1,0 +1,5 @@
+name = "terminal"
+description = "Built-in terminal tools that close an agent run."
+native = "terminal"
+implicit = true
+tools = ["complete_task", "fail_task"]

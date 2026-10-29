@@ -1,0 +1,12 @@
+name = "fixed-operations"
+description = "Example fixed argv operation available to agents under this config root."
+
+[[operations]]
+name = "echo"
+description = "Echo the agent id and a model-supplied string."
+executable = "/bin/sh"
+argv = ["-c", 'printf "%s %s\n" "$1" "$2"', "sh", "{%agent_id}", "{text}"]
+
+[operations.text]
+type = "string"
+required = true
