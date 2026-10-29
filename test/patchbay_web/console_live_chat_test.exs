@@ -136,7 +136,7 @@ defmodule PatchbayWeb.ConsoleLiveChatTest do
     start_supervised!({DefinitionRegistry, name: DefinitionRegistry, config_dir: config_dir})
 
     on_exit(fn -> File.rm_rf!(root) end)
-    {:ok, conn: build_conn()}
+    {:ok, conn: PatchbayWeb.AuthTestHelper.authenticated_conn()}
   end
 
   test "send submits a message through Runtime.send_message", %{conn: conn} do

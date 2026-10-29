@@ -62,7 +62,7 @@ defmodule PatchbayWeb.ConsoleLiveTest do
     )
 
     on_exit(fn -> File.rm_rf!(root) end)
-    {:ok, conn: build_conn()}
+    {:ok, conn: PatchbayWeb.AuthTestHelper.authenticated_conn()}
   end
 
   test "console lists definitions and shows the selected agent", %{conn: conn} do

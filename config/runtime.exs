@@ -30,16 +30,28 @@ if config_env() == :prod do
       System.get_env("PATCHBAY_LIVE_VIEW_SIGNING_SALT") ||
         raise "PATCHBAY_LIVE_VIEW_SIGNING_SALT is not set"
 
+    ui_token =
+      case System.get_env("PATCHBAY_UI_TOKEN") do
+        value when is_binary(value) and value != "" -> value
+        _missing -> raise "PATCHBAY_UI_TOKEN is not set"
+      end
+
     config :patchbay, PatchbayWeb.Endpoint,
       secret_key_base: secret_key_base,
       server: true,
       session: [signing_salt: session_signing_salt],
       live_view: [signing_salt: live_view_signing_salt],
+      check_origin: [
+        "http://localhost:#{web_port}",
+        "http://127.0.0.1:#{web_port}"
+      ],
       url: [host: web_host, port: web_port],
       http: [
         ip: {127, 0, 0, 1},
         port: web_port
       ]
+
+    config :patchbay, :ui_token, ui_token
 
     config :patchbay, :manager,
       supervisor_host: System.get_env("PATCHBAY_SUPERVISOR_HOST", "127.0.0.1"),

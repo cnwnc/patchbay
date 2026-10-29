@@ -62,6 +62,10 @@
       PATCHBAY_STATE_DIR = cfg.stateDir;
       PATCHBAY_RUNTIME_DIR = cfg.runtimeDir;
       PATCHBAY_WEB_PORT = toString cfg.manager.webPort;
+      PATCHBAY_CONTROL_TOKEN_FILE = cfg.controlTokenFile;
+      PATCHBAY_UI_TOKEN_FILE = cfg.uiTokenFile;
+      PATCHBAY_SECRET_KEY_BASE_FILE = cfg.secretKeyBaseFile;
+      PATCHBAY_SIGNING_SALTS_FILE = cfg.signingSaltsFile;
     }
     // lib.optionalAttrs (cfg.workerSupervisor.workspaceRoot != null) {
       PATCHBAY_WORKSPACE_DIR = cfg.workerSupervisor.workspaceRoot;
@@ -159,6 +163,18 @@ in {
         root-owned with mode 0600 and loaded by both services, so the agent user
         and the workers it starts cannot read the token. The token is never
         passed on a command line.
+      '';
+    };
+
+    uiTokenFile = mkOption {
+      type = types.str;
+      default = "${config.services.patchbay.runtimeDir}/ui-token.env";
+      description = ''
+        systemd EnvironmentFile holding PATCHBAY_UI_TOKEN, the HTTP Basic
+        password for the Console and Configuration UI. It is created
+        root-owned with mode 0600 and loaded only by the manager, so neither
+        the agent user nor the workers can read it. The token is never passed
+        on a command line or written to the Nix store.
       '';
     };
 
@@ -379,6 +395,14 @@ in {
         message = "services.patchbay.signingSaltsFile must not be readable from the agent state directory.";
       }
       {
+        assertion =
+          !(lib.hasPrefix "${cfg.agentStateDir}/" cfg.uiTokenFile)
+          && !(lib.hasPrefix "${cfg.configDir}/" cfg.uiTokenFile)
+          && cfg.uiTokenFile != cfg.agentStateDir
+          && cfg.uiTokenFile != cfg.configDir;
+        message = "services.patchbay.uiTokenFile must not be readable from the agent state or configuration directory.";
+      }
+      {
         assertion = cfg.manager.supervisorHost == "127.0.0.1" || cfg.manager.supervisorHost == "localhost";
         message = "services.patchbay.manager.supervisorHost must be loopback.";
       }
@@ -393,6 +417,7 @@ in {
               cfg.agentStateDir
               cfg.agentRuntimeDir
               cfg.controlTokenFile
+              cfg.uiTokenFile
               cfg.secretKeyBaseFile
               cfg.signingSaltsFile
               cfg.manager.transcriptDir
@@ -447,7 +472,7 @@ in {
       );
 
     systemd.services.patchbay-token = {
-      description = "Create the Patchbay control token and secret key base";
+      description = "Create the Patchbay control, UI, and web secrets";
       wantedBy = ["multi-user.target"];
       before = [
         "patchbay-manager.service"
@@ -466,6 +491,8 @@ in {
       script = ''
         token_file=${lib.escapeShellArg cfg.controlTokenFile}
         token_dir=$(dirname "$token_file")
+        ui_token_file=${lib.escapeShellArg cfg.uiTokenFile}
+        ui_token_dir=$(dirname "$ui_token_file")
         secret_file=${lib.escapeShellArg cfg.secretKeyBaseFile}
         secret_dir=$(dirname "$secret_file")
         salts_file=${lib.escapeShellArg cfg.signingSaltsFile}
@@ -473,6 +500,10 @@ in {
 
         if [ ! -d "$token_dir" ]; then
           install -d -m 0755 -o root -g root "$token_dir"
+        fi
+
+        if [ ! -d "$ui_token_dir" ]; then
+          install -d -m 0755 -o root -g root "$ui_token_dir"
         fi
 
         if [ ! -d "$secret_dir" ]; then
@@ -491,6 +522,16 @@ in {
         else
           chown root:root "$token_file"
           chmod 0600 "$token_file"
+        fi
+
+        if [ ! -s "$ui_token_file" ]; then
+          tmp=$(mktemp "$ui_token_file.XXXXXX")
+          printf 'PATCHBAY_UI_TOKEN=%s\n' "$(head -c 48 /dev/urandom | base64 | tr -d '\n=')" > "$tmp"
+          install -m 0600 -o root -g root "$tmp" "$ui_token_file"
+          rm -f "$tmp"
+        else
+          chown root:root "$ui_token_file"
+          chmod 0600 "$ui_token_file"
         fi
 
         if [ ! -s "$secret_file" ]; then
@@ -540,7 +581,7 @@ in {
         TimeoutStopSec = 15;
         UMask = "0077";
         EnvironmentFile =
-          [cfg.controlTokenFile cfg.secretKeyBaseFile cfg.signingSaltsFile]
+          [cfg.controlTokenFile cfg.uiTokenFile cfg.secretKeyBaseFile cfg.signingSaltsFile]
           ++ cfg.environmentFiles
           ++ cfg.manager.environmentFiles;
 

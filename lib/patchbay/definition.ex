@@ -4,9 +4,9 @@ defmodule Patchbay.Definition do
 
   An agent directory contains `agent.toml`, an optional `prompts/` directory,
   and an optional `scripts/` directory. A configuration root may also provide
-  `shared/prompts/` and `shared/scripts/`. Prompt files are enabled by
-  presence; shared prompts are assembled before agent prompts, and each group
-  is ordered lexically by filename.
+  `shared/prompts/` and a shared `scripts/` directory. Prompt files are enabled
+  by presence; shared prompts are assembled before agent prompts, and each
+  group is ordered lexically by filename.
 
   `load/2` reads the filesystem. `parse/2` validates a TOML document without
   reading prompts or scripts.

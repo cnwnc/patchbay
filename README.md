@@ -6,7 +6,7 @@ Patchbay runs declarative agents as supervised worker processes behind a Phoenix
 
 ```nix
 {
-  inputs.patchbay.url = "github:OWNER/patchbay";
+  inputs.patchbay.url = "github:cnwnc/patchbay";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs, patchbay }: {
@@ -32,15 +32,26 @@ nix run .#default -- help
 
 The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`); it is passed to the manager as `PATCHBAY_WEB_PORT`. Put a reverse proxy in front of it if remote access is needed.
 
+The Console and Configuration routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`; the username is ignored. The module generates a root-owned, mode `0600` environment file at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`) containing the token. Only the manager service loads it, and workers do not inherit it. Read it as root when connecting:
+
+```sh
+sudo cat /run/patchbay/ui-token.env
+curl -u patchbay:"$PATCHBAY_UI_TOKEN" http://127.0.0.1:4000/
+```
+
+For remote browsers, use an SSH tunnel such as `ssh -L 4000:127.0.0.1:4000 host` rather than exposing the port. If a reverse proxy is used, terminate TLS there and add its own authentication in addition to the Basic token; forward to the loopback listener only. Do not put the token in query strings, URLs, or proxy logs. Static assets under `/assets` are public; every page and LiveView websocket requires authentication.
+
 ## Configuration
 
 The manager reads agent definitions from `services.patchbay.configDir` (default `/etc/patchbay`):
 
 - `agents/<id>/agent.toml`, with optional `prompts/` and `scripts/` directories
 - `toolkits/*.toml` for fixed operations and native toolkit manifests
-- `shared/prompts/` and `shared/scripts/` for assets shared by agents
+- `shared/prompts/` and `scripts/` at the configuration root for assets shared by agents
 
 State, transcripts, runtime paths, and worker workspaces use the separate `services.patchbay.stateDir` and `agentStateDir`. The manager and worker supervisor run as different users.
+
+Native filesystem toolkits execute in the manager process, not the isolated worker. An absolute `[toolkits.config] root` is trusted operator configuration and may point at an agent workspace or project directory, but it must not overlap `/proc` or the manager's state, runtime, or secret paths. Relative roots stay strictly below the config root, and every model-supplied path stays confined below the effective root.
 
 Provider settings resolve from the manager environment:
 
@@ -49,7 +60,7 @@ Provider settings resolve from the manager environment:
 
 Non-secret values such as the base URL and model can use `services.patchbay.manager.environment`. Put `PATCHBAY_LLM_API_KEY` or `OPENAI_API_KEY` in a manager environment file configured with `services.patchbay.manager.environmentFiles`, not in the Nix store. Provider credentials stay in the manager; worker and tool process environments strip them.
 
-The module generates `PATCHBAY_CONTROL_TOKEN`, `SECRET_KEY_BASE`, and the Phoenix session and LiveView signing salts in root-owned files under the state directory. The control token is loaded by both services; the secret key base and signing salts are loaded only by the manager. Back up or preserve these files if browser sessions must survive a state wipe.
+The module generates `PATCHBAY_CONTROL_TOKEN` in a root-owned `0600` file at `services.patchbay.controlTokenFile` (default `/run/patchbay/control-token.env`), `PATCHBAY_UI_TOKEN` at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`), `SECRET_KEY_BASE` at `services.patchbay.secretKeyBaseFile` (default `<stateDir>/secret-key-base`), and the Phoenix session and LiveView signing salts at `services.patchbay.signingSaltsFile` (default `<stateDir>/web-signing-salts.env`). The control token is loaded by both services; the UI token, secret key base, and signing salts are loaded only by the manager. Back up or preserve these files if browser sessions must survive a state wipe.
 
 ## Development
 
@@ -58,3 +69,5 @@ nix develop
 mix deps.get
 mix test
 ```
+
+For local development, set `PATCHBAY_UI_TOKEN` before starting the server; without it the UI answers `401`. The test environment supplies its own token.

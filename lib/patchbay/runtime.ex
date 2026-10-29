@@ -394,6 +394,7 @@ defmodule Patchbay.Runtime do
         provider_opts: Keyword.get(opts, :provider_opts, []),
         definitions: definitions,
         state_dir: state_dir,
+        runtime_dir: config.runtime_dir,
         workspace_dir: Keyword.get(opts, :workspace) || config.workspace_dir,
         result_dir: config.result_dir,
         hook_timeout: Keyword.get(opts, :hook_timeout, @default_hook_timeout),
@@ -1805,6 +1806,8 @@ defmodule Patchbay.Runtime do
     context = %{
       definition: agent.definition,
       agent_id: agent.id,
+      state_dir: state.state_dir,
+      runtime_dir: state.runtime_dir,
       variables: variables(state, agent, run, attempt)
     }
 

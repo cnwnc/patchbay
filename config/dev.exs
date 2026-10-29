@@ -6,7 +6,10 @@ config :patchbay, PatchbayWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: web_port],
   url: [port: web_port],
   server: true,
-  check_origin: false,
+  check_origin: [
+    "http://localhost:#{web_port}",
+    "http://127.0.0.1:#{web_port}"
+  ],
   code_reloader: false,
   debug_errors: true,
   session: [

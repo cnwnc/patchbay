@@ -1,15 +1,14 @@
 defmodule Patchbay.CLI.Manager do
   @moduledoc """
-  Foundational manager service.
+  Manager-side worker control service.
 
   The manager owns transcripts and the worker control relationship. It listens
   on a loopback TCP channel for workers started by the worker supervisor, and
   connects to the supervisor's loopback control channel to request worker
-  start/stop.
+  start/stop and execute fixed operations.
 
-  This skeleton does not implement model calls, toolkits, or run state. It
-  provides the process topology, authenticated handshakes, operation RPC, and
-  manager-owned transcript sink that later layers build on.
+  Model calls, native toolkits, run state, and agent scheduling live in
+  `Patchbay.Runtime` and `Patchbay.AgentRunner`, which supervise this service.
   """
 
   use GenServer

@@ -24,7 +24,7 @@ defmodule PatchbayWeb.ConfigurationLiveSaveTest do
     on_exit(fn -> File.rm_rf!(root) end)
 
     {:ok,
-     conn: build_conn(),
+     conn: PatchbayWeb.AuthTestHelper.authenticated_conn(),
      config_dir: config_dir,
      agent_dir: agent_dir,
      path: source_path(agent_dir)}

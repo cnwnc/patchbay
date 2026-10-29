@@ -225,6 +225,45 @@ defmodule Patchbay.Toolkit.Native.FilesystemTest do
     end
   end
 
+  describe "protected roots" do
+    test "rejects /proc, manager state, manager runtime, and their ancestors", %{
+      base: base,
+      config_root: config_root
+    } do
+      state = Path.join(base, "manager-state")
+      runtime = Path.join(state, "runtime")
+      File.mkdir_p!(runtime)
+      protected = %{state_dir: state, runtime_dir: runtime}
+
+      for root <- ["/proc", "/proc/self", state, runtime, base] do
+        assert {:error, {:root_protected, _root, _protected}} =
+                 Filesystem.execute(
+                   "read_file",
+                   %{"path" => "a.txt"},
+                   context(config_root, root) |> Map.merge(protected)
+                 )
+      end
+    end
+
+    test "protects explicit secret paths and their ancestors", %{
+      base: base,
+      config_root: config_root
+    } do
+      secret_root = Path.join(base, "secrets")
+      File.mkdir_p!(secret_root)
+      secret = Path.join(secret_root, "ui-token.env")
+      File.write!(secret, "secret")
+
+      assert {:error, {:root_protected, _root, _protected}} =
+               Filesystem.execute(
+                 "read_file",
+                 %{"path" => "a.txt"},
+                 context(config_root, secret_root)
+                 |> Map.put(:secret_roots, [secret])
+               )
+    end
+  end
+
   describe "model path confinement" do
     test "absolute paths and traversal are rejected", %{config_root: config_root} do
       context = context(config_root, "agents/alpha/work")
@@ -548,6 +587,32 @@ defmodule Patchbay.Toolkit.Native.FilesystemTest do
                Filesystem.execute("write_file", %{"path" => "a.txt", "content" => "ok"}, context)
 
       assert File.read!(Path.join(workspace, "a.txt")) == "ok"
+    end
+
+    test "protected absolute roots are rejected at load time", %{config_root: config_root} do
+      state_dir = Patchbay.Config.load().state_dir
+
+      for root <- ["/proc", state_dir] do
+        agent_dir =
+          write_agent(
+            config_root,
+            "alpha",
+            """
+            [[toolkits]]
+            toolkit = "filesystem"
+
+            [toolkits.config]
+            root = "#{root}"
+            """
+          )
+
+        assert {:error, %Definition.Error{errors: errors}} = Definition.load(agent_dir)
+
+        assert Enum.any?(errors, fn issue ->
+                 issue.path == ["toolkits", 0, "config", "root"] and
+                   issue.message =~ "must not target"
+               end)
+      end
     end
   end
 

@@ -3,14 +3,20 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
   Built-in file tools confined to a configured directory root.
 
   A toolkit declaration supplies `config.root`. Relative roots are resolved
-  against the agent's `config_root`; absolute roots are accepted only when they
-  land strictly below that config root. The root must exist and be a directory.
+  against the agent's `config_root` and must stay strictly below it. Absolute
+  roots are trusted operator configuration: they may point at an agent-owned
+  workspace or project directory outside the config tree, but they must not
+  overlap `/proc` or the manager's state, runtime, or secret paths. Native
+  filesystem tools execute inside the manager process rather than the isolated
+  worker, so those manager-owned trees would otherwise expose transcripts,
+  control tokens, signing salts, and similar material to model-supplied paths.
+  Valid absolute workspace and project roots remain accepted.
 
-  Every model-supplied path is relative, is checked component by component, and
-  is confined below the root. Existing and missing paths are both resolved
-  through existing symlinks, so a link that leaves the root is rejected before
-  any read or write. Sibling names that merely share a prefix with the root are
-  outside the root.
+  Every model-supplied path is relative, is checked component by component,
+  and is confined below the effective root. Existing and missing paths are both
+  resolved through existing symlinks, so a link that leaves the root is
+  rejected before any read or write. Sibling names that merely share a prefix
+  with the root are outside the root.
 
   Reads, writes, edits, and directory listings are bounded. Writes are atomic
   within the target directory.
@@ -39,6 +45,15 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
 
   @max_path_bytes 4096
 
+  @always_protected ["/proc"]
+
+  @secret_path_variables ~w(
+    PATCHBAY_CONTROL_TOKEN_FILE
+    PATCHBAY_UI_TOKEN_FILE
+    PATCHBAY_SECRET_KEY_BASE_FILE
+    PATCHBAY_SIGNING_SALTS_FILE
+  )
+
   @impl true
   def id, do: @id
 
@@ -46,12 +61,16 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
   Validates a toolkit `config` at definition load time.
 
   `config.root` is required. A relative root must resolve strictly below the
-  agent's config root. An absolute root is trusted configuration: it may point
-  at an agent-owned workspace outside the config tree, and execute/4 still
-  canonicalizes it and confines every model-supplied path below it.
+  agent's config root. An absolute root is trusted configuration, but it is
+  rejected when it overlaps `/proc` or a configured manager state, runtime, or
+  secret path. Pass `:state_dir`, `:runtime_dir`, `:protected_roots`, or
+  `:secret_roots` to check against explicit paths instead of the process
+  environment.
   """
-  @spec validate_config(term(), Path.t() | nil) :: :ok | {:error, String.t()}
-  def validate_config(config, config_root) when is_map(config) do
+  @spec validate_config(term(), Path.t() | nil, keyword()) :: :ok | {:error, String.t()}
+  def validate_config(config, config_root, opts \\ [])
+
+  def validate_config(config, config_root, opts) when is_map(config) do
     case fetch(config, :root) do
       root when is_binary(root) ->
         cond do
@@ -62,7 +81,7 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
             {:error, "must be a non-empty path"}
 
           Path.type(root) == :absolute ->
-            :ok
+            validate_absolute_root(root, opts)
 
           true ->
             validate_relative_root(root, config_root)
@@ -76,8 +95,16 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
     end
   end
 
-  def validate_config(_config, _config_root),
+  def validate_config(_config, _config_root, _opts),
     do: {:error, "must be a table with a root path"}
+
+  defp validate_absolute_root(root, opts) do
+    if protected_root?(canonical_candidate(root), protected_roots(opts)) do
+      {:error, "must not target /proc or manager-owned state, runtime, or secret paths"}
+    else
+      :ok
+    end
+  end
 
   defp validate_relative_root(root, config_root) when is_binary(config_root) do
     if Path.type(config_root) == :absolute do
@@ -264,10 +291,79 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
     with {:ok, config} <- toolkit_config(context),
          {:ok, root_value} <- required_root(config),
          {:ok, base} <- base_for_root(context, root_value),
-         {:ok, root} <- canonical_root(base, root_value) do
+         {:ok, root} <- canonical_root(base, root_value),
+         :ok <- unprotected_root(root, protected_options(context)) do
       {:ok, root, limits(config)}
     end
   end
+
+  defp protected_options(context) do
+    [
+      state_dir: fetch(context, :state_dir),
+      runtime_dir: fetch(context, :runtime_dir),
+      protected_roots: fetch(context, :protected_roots),
+      secret_roots: fetch(context, :secret_roots)
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp protected_roots(opts) do
+    config = Patchbay.Config.load()
+
+    configured =
+      opts
+      |> Keyword.get(:protected_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+
+    secret_roots =
+      opts
+      |> Keyword.get(:secret_roots, [])
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+
+    state_dir = Keyword.get(opts, :state_dir) || config.state_dir
+    runtime_dir = Keyword.get(opts, :runtime_dir) || config.runtime_dir
+
+    (@always_protected ++
+       [state_dir, runtime_dir] ++ configured ++ secret_roots ++ secret_paths())
+    |> Enum.map(&canonical_candidate/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp secret_paths do
+    Enum.flat_map(@secret_path_variables, fn variable ->
+      case System.get_env(variable) do
+        value when is_binary(value) and value != "" -> [value]
+        _missing -> []
+      end
+    end)
+  end
+
+  defp unprotected_root(root, opts) do
+    case Enum.find(protected_roots(opts), &overlaps?(root, &1)) do
+      nil -> :ok
+      protected -> {:error, {:root_protected, root, protected}}
+    end
+  end
+
+  defp protected_root?(root, protected) do
+    Enum.any?(protected, &overlaps?(root, &1))
+  end
+
+  defp overlaps?(path, protected), do: below?(path, protected) or below?(protected, path)
+
+  defp canonical_candidate(path) when is_binary(path) and path != "" do
+    expanded = Path.expand(path)
+
+    case real_path(expanded) do
+      {:ok, real} -> real
+      {:error, _reason} -> expanded
+    end
+  end
+
+  defp canonical_candidate(_path), do: nil
 
   defp base_for_root(context, root_value) do
     if is_binary(root_value) and Path.type(root_value) == :absolute do
