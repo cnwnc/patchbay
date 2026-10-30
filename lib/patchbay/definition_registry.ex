@@ -10,8 +10,9 @@ defmodule Patchbay.DefinitionRegistry do
   `reload/1` rescans the config tree and only re-reads directories whose
   contents changed since the previous scan. Shared prompts and scripts are
   included in that check. A changed directory that fails validation is
-  reported but does not replace its previous snapshot. Symlinked agent
-  directories and symlinked `agent.toml` files are ignored.
+  reported but does not replace its previous snapshot. Directories without a
+  regular `agent.toml` are reported as failures. Symlinked agent directories
+  and symlinked `agent.toml` files are ignored.
 
   There is no file watcher; callers drive refresh with `reload/1`.
 
@@ -263,23 +264,29 @@ defmodule Patchbay.DefinitionRegistry do
 
   defp scan(state) do
     directories = agent_directories(state.config)
+    invalid = invalid_agent_directories(state.config)
     shared = shared_fingerprint(state.config.config_dir)
 
     ids =
       directories
       |> Map.keys()
+      |> Kernel.++(Map.keys(invalid))
       |> Kernel.++(Map.keys(state.entries))
       |> Kernel.++(Map.keys(state.failures))
       |> Enum.uniq()
       |> Enum.sort()
 
     Enum.reduce(ids, {state, %Report{}}, fn id, {state, report} ->
-      case Map.fetch(directories, id) do
-        {:ok, directory} ->
-          {state, outcome} = refresh(state, id, directory, shared, false)
+      cond do
+        Map.has_key?(directories, id) ->
+          {state, outcome} = refresh(state, id, directories[id], shared, false)
           {state, add_outcome(report, outcome)}
 
-        :error ->
+        Map.has_key?(invalid, id) ->
+          {state, outcome} = record_invalid(state, id, invalid[id], shared)
+          {state, add_outcome(report, outcome)}
+
+        true ->
           state = remove(state, id)
           {state, %{report | removed: report.removed ++ [id]}}
       end
@@ -348,6 +355,28 @@ defmodule Patchbay.DefinitionRegistry do
 
   defp next_revision(state, id, nil, _definition) do
     Map.get(state.revisions, id, 0) + 1
+  end
+
+  defp record_invalid(state, id, {directory, error}, shared) do
+    fingerprint = :erlang.md5(:erlang.term_to_binary({:invalid, directory, error.errors, shared}))
+
+    state = %{state | entries: Map.delete(state.entries, id)}
+
+    case Map.get(state.failures, id) do
+      %Failure{fingerprint: ^fingerprint} = failure ->
+        {state, {:rejected, failure}}
+
+      _other ->
+        failure = %Failure{
+          id: id,
+          error: error,
+          fingerprint: fingerprint,
+          attempted_at: DateTime.utc_now()
+        }
+
+        state = %{state | failures: Map.put(state.failures, id, failure)}
+        {state, {:rejected, failure}}
+    end
   end
 
   defp load_definition(config, directory) do
@@ -429,6 +458,58 @@ defmodule Patchbay.DefinitionRegistry do
       true
     else
       _other -> false
+    end
+  end
+
+  defp invalid_agent_directories(%Config{} = config) do
+    directory = Path.join(config.config_dir, "agents")
+
+    case File.ls(directory) do
+      {:ok, entries} ->
+        entries
+        |> Enum.sort()
+        |> Enum.reduce(%{}, fn entry, invalid ->
+          path = Path.join(directory, entry)
+
+          case invalid_agent_directory(path) do
+            nil -> invalid
+            error -> Map.put(invalid, entry, {path, error})
+          end
+        end)
+
+      {:error, _reason} ->
+        %{}
+    end
+  end
+
+  defp invalid_agent_directory(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        invalid_agent_source(path)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp invalid_agent_source(directory) do
+    source = Path.join(directory, "agent.toml")
+
+    case File.lstat(source) do
+      {:ok, %File.Stat{type: :regular}} ->
+        nil
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        nil
+
+      {:ok, %File.Stat{}} ->
+        %Error{errors: [Error.issue([source], "agent.toml must be a regular file")]}
+
+      {:error, :enoent} ->
+        %Error{errors: [Error.issue([source], "agent.toml is missing")]}
+
+      {:error, _reason} ->
+        nil
     end
   end
 

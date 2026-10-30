@@ -290,6 +290,52 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.new-agent-form {
+  padding: 10px 14px;
+  border-bottom: 2px solid var(--line);
+  background: var(--paper);
+}
+
+.new-agent-form label {
+  display: block;
+  font-size: var(--fs-label);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.new-agent-fields {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.new-agent-fields input,
+.new-agent-fields select {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--white);
+  font-family: var(--mono);
+  font-size: var(--fs-data);
+  color: var(--ink);
+}
+
+.new-agent-fields input {
+  flex: 1;
+}
+
+.new-agent-fields .filter {
+  margin-left: 0;
+}
+
+.new-agent-form .source-note {
+  display: block;
+  margin-top: 6px;
+}
+
 .filters {
   display: flex;
 }

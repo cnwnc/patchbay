@@ -116,6 +116,67 @@ defmodule Patchbay.Config.SourceTest do
     assert {:ok, %File.Stat{type: :symlink}} = File.lstat(source_path(config_dir, "researcher"))
   end
 
+  test "creates an agent directory with a valid template", %{config_dir: config_dir} do
+    body = Source.template("new-agent", "perpetual")
+
+    assert {:ok, %{id: "new-agent", path: path, hash: hash}} =
+             Source.create(config_dir, "new-agent", body)
+
+    assert path == source_path(config_dir, "new-agent")
+    assert hash == Source.hash(body)
+    assert File.read!(path) == body
+    assert File.dir?(Path.join(agent_dir(config_dir, "new-agent"), "prompts"))
+
+    assert {:ok, definition} =
+             Patchbay.Definition.load(agent_dir(config_dir, "new-agent"),
+               config_root: config_dir
+             )
+
+    assert definition.id == "new-agent"
+    assert definition.lifecycle.kind == :perpetual
+  end
+
+  test "create never overwrites an existing agent directory", %{config_dir: config_dir} do
+    write_source(config_dir, "researcher", agent_body("researcher", "model-a"))
+
+    assert {:error, :exists} =
+             Source.create(config_dir, "researcher", Source.template("researcher"))
+
+    assert File.read!(source_path(config_dir, "researcher")) ==
+             agent_body("researcher", "model-a")
+
+    File.mkdir_p!(agent_dir(config_dir, "blank"))
+
+    assert {:error, :exists} =
+             Source.create(config_dir, "blank", Source.template("blank"))
+
+    assert {:ok, entries} = File.ls(agent_dir(config_dir, "blank"))
+    assert entries == []
+  end
+
+  test "create rejects IDs that are not simple directory names", %{config_dir: config_dir} do
+    for id <- ["", ".", "..", "../escape", "nested/agent", "Bad ID", "Uppercase", "a\\b"] do
+      assert {:error, :invalid_id} = Source.create(config_dir, id, Source.template(id))
+      refute File.exists?(Path.join(config_dir, "agents"))
+    end
+  end
+
+  test "an absent source can be created once and is then stale", %{config_dir: config_dir} do
+    directory = agent_dir(config_dir, "repair")
+    File.mkdir_p!(directory)
+    body = agent_body("repair", "model-a")
+    other = agent_body("repair", "model-b")
+
+    assert {:error, :not_found} = Source.write(config_dir, "repair", body, nil)
+
+    assert {:ok, %{hash: hash}} = Source.write(config_dir, "repair", body, :absent)
+    assert hash == Source.hash(body)
+    assert File.read!(source_path(config_dir, "repair")) == body
+
+    assert {:error, :stale} = Source.write(config_dir, "repair", other, :absent)
+    assert File.read!(source_path(config_dir, "repair")) == body
+  end
+
   defp agent_dir(config_dir, id), do: Path.join([config_dir, "agents", id])
 
   defp source_path(config_dir, id), do: Path.join(agent_dir(config_dir, id), "agent.toml")

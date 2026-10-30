@@ -28,12 +28,17 @@ defmodule PatchbayWeb.ConfigurationLive do
        source: "",
        editable_source: nil,
        source_hash: nil,
+       source_path: nil,
+       source_absent?: false,
        source_editable?: false,
        source_note: nil,
        config_dir: nil,
        resolved: "",
        prompts: [],
        scripts: [],
+       new_agent_open: false,
+       new_agent_id: "",
+       new_agent_lifecycle: "one-shot",
        now: DateTime.utc_now()
      )}
   end
@@ -66,6 +71,19 @@ defmodule PatchbayWeb.ConfigurationLive do
       end
 
     {:noreply, load(socket, socket.assigns.selected)}
+  end
+
+  @impl true
+  def handle_event("new_agent", _params, socket) do
+    {:noreply, assign(socket, new_agent_open: true)}
+  end
+
+  def handle_event("cancel_new_agent", _params, socket) do
+    {:noreply, assign(socket, new_agent_open: false)}
+  end
+
+  def handle_event("create_agent", params, socket) do
+    {:noreply, create_agent(socket, params)}
   end
 
   @impl true
@@ -104,7 +122,15 @@ defmodule PatchbayWeb.ConfigurationLive do
         _other -> nil
       end
 
-    {source_info, resolved} = definition_data(definition)
+    {source_info, resolved} =
+      case definition do
+        nil ->
+          failure_data(config_dir, selected, failure)
+
+        definition ->
+          definition_data(definition)
+      end
+
     prompts = if definition, do: definition.prompts, else: []
     scripts = if definition, do: definition.shared_scripts ++ definition.agent_scripts, else: []
 
@@ -117,6 +143,8 @@ defmodule PatchbayWeb.ConfigurationLive do
       source: source_info.display,
       editable_source: source_info.editable,
       source_hash: source_info.hash,
+      source_path: source_info.path,
+      source_absent?: source_info.absent,
       source_editable?: not is_nil(source_info.editable),
       source_note: source_info.note,
       config_dir: config_dir,
@@ -143,43 +171,109 @@ defmodule PatchbayWeb.ConfigurationLive do
   defp first_id([entry | _rest]), do: entry.id
   defp first_id([]), do: nil
 
-  defp definition_data(nil) do
-    {%{display: "", editable: nil, hash: nil, note: nil}, ""}
-  end
-
   defp definition_data(definition) do
     {source_info(definition), resolved_data(definition)}
   end
 
+  defp empty_source_info do
+    %{display: "", editable: nil, hash: nil, path: nil, absent: false, note: nil}
+  end
+
+  defp failure_data(config_dir, id, failure) when is_binary(config_dir) and is_binary(id) do
+    {failure_source_info(config_dir, id), failure_resolved(failure)}
+  end
+
+  defp failure_data(_config_dir, _id, failure) do
+    {empty_source_info(), failure_resolved(failure)}
+  end
+
+  defp failure_resolved(nil), do: ""
+  defp failure_resolved(%{error: %Error{} = error}), do: failure_text(error)
+
+  defp failure_source_info(config_dir, id) do
+    with {:ok, path} <- Source.path(config_dir, id) do
+      case Source.read(config_dir, id) do
+        {:ok, %{content: raw, hash: hash}} ->
+          editable_source(raw, hash, path)
+
+        {:error, :not_found} ->
+          %{
+            display: "agent.toml does not exist yet.",
+            editable: "",
+            hash: nil,
+            path: path,
+            absent: true,
+            note: "Saving creates agent.toml atomically if it is still absent."
+          }
+
+        {:error, reason} ->
+          unreadable_source(path, reason)
+      end
+    else
+      {:error, reason} ->
+        unreadable_source(nil, reason)
+    end
+  end
+
   defp source_info(%{path: nil}) do
-    %{display: "No agent.toml path was recorded.", editable: nil, hash: nil, note: nil}
+    %{
+      display: "No agent.toml path was recorded.",
+      editable: nil,
+      hash: nil,
+      path: nil,
+      absent: false,
+      note: nil
+    }
   end
 
   defp source_info(%{path: path}) do
     case File.read(path) do
       {:ok, raw} ->
-        redacted = redact_source(raw)
-
-        if redacted == raw do
-          %{display: raw, editable: raw, hash: Source.hash(raw), note: nil}
-        else
-          %{
-            display: redacted,
-            editable: nil,
-            hash: Source.hash(raw),
-            note: "Editing is disabled because this source contains secret values."
-          }
-        end
+        editable_source(raw, Source.hash(raw), path)
 
       {:error, reason} ->
-        %{
-          display: "Cannot read #{path}: #{:file.format_error(reason)}",
-          editable: nil,
-          hash: nil,
-          note: nil
-        }
+        unreadable_source(path, reason)
     end
   end
+
+  defp editable_source(raw, hash, path) do
+    redacted = redact_source(raw)
+
+    if redacted == raw do
+      %{display: raw, editable: raw, hash: hash, path: path, absent: false, note: nil}
+    else
+      %{
+        display: redacted,
+        editable: nil,
+        hash: hash,
+        path: path,
+        absent: false,
+        note: "Editing is disabled because this source contains secret values."
+      }
+    end
+  end
+
+  defp unreadable_source(path, reason) do
+    label = if path, do: "Cannot read #{path}", else: "Cannot read source"
+
+    %{
+      display: "#{label}: #{source_error(reason)}",
+      editable: nil,
+      hash: nil,
+      path: path,
+      absent: false,
+      note: nil
+    }
+  end
+
+  defp source_error(reason) when is_atom(reason) do
+    case :file.format_error(reason) do
+      message when message in [~c"unknown POSIX error", ~c"unknown error"] -> inspect(reason)
+      message -> to_string(message)
+    end
+  end
+
+  defp source_error(reason), do: error_detail(reason)
 
   defp resolved_data(definition) do
     definition
@@ -190,6 +284,86 @@ defmodule PatchbayWeb.ConfigurationLive do
       {:ok, json} -> json
       {:error, reason} -> "Cannot render definition: #{inspect(reason)}"
     end
+  end
+
+  defp create_agent(socket, params) do
+    id = params["agent_id"] || params["id"]
+    id = if is_binary(id), do: String.trim(id), else: ""
+
+    lifecycle =
+      if params["lifecycle"] in ["one-shot", "perpetual"],
+        do: params["lifecycle"],
+        else: "one-shot"
+
+    config_dir = socket.assigns.config_dir
+
+    cond do
+      is_nil(config_dir) ->
+        new_agent_error(socket, id, lifecycle, "the configuration directory is unavailable")
+
+      not Source.valid_new_id?(id) ->
+        new_agent_error(
+          socket,
+          id,
+          lifecycle,
+          "use a lowercase ID starting with a letter or digit, with dashes or underscores, up to 64 characters"
+        )
+
+      true ->
+        case Source.create(config_dir, id, Source.template(id, lifecycle)) do
+          {:ok, %{id: created_id}} ->
+            {level, message} =
+              case reload_created(created_id) do
+                :ok ->
+                  {:info, "Created agent #{created_id}."}
+
+                {:error, detail} ->
+                  {:error, "Created agent #{created_id}, but reload failed: #{detail}"}
+              end
+
+            broadcast_reload()
+
+            socket
+            |> assign(new_agent_open: false, new_agent_id: "", new_agent_lifecycle: "one-shot")
+            |> put_flash(level, message)
+            |> push_patch(to: ~p"/config/#{created_id}")
+
+          {:error, :exists} ->
+            new_agent_error(
+              socket,
+              id,
+              lifecycle,
+              "an agent directory with that ID already exists"
+            )
+
+          {:error, :invalid_id} ->
+            new_agent_error(socket, id, lifecycle, "the ID is not valid")
+
+          {:error, reason} ->
+            new_agent_error(socket, id, lifecycle, error_detail(reason))
+        end
+    end
+  end
+
+  defp new_agent_error(socket, id, lifecycle, detail) do
+    socket
+    |> assign(new_agent_open: true, new_agent_id: id, new_agent_lifecycle: lifecycle)
+    |> put_flash(:error, "Create failed: #{detail}.")
+  end
+
+  defp reload_created(id) do
+    case safe(fn -> DefinitionRegistry.reload_agent(id) end) do
+      {:ok, _snapshot} -> :ok
+      {:error, %Error{} = error} -> {:error, Error.message(error)}
+      {:error, :not_found} -> {:error, "the definition directory was not found"}
+      {:error, reason} -> {:error, error_detail(reason)}
+    end
+  end
+
+  defp broadcast_reload do
+    Phoenix.PubSub.broadcast_from(@pubsub, self(), "config", {:config, :reloaded})
+  rescue
+    _exception -> :ok
   end
 
   defp save_source(socket, params) do
@@ -204,21 +378,21 @@ defmodule PatchbayWeb.ConfigurationLive do
       is_nil(content) ->
         put_flash(socket, :error, "Save failed: no source was submitted.")
 
-      is_nil(socket.assigns.snapshot) ->
-        put_flash(socket, :error, "Save failed: the definition is not loaded.")
+      is_nil(socket.assigns.config_dir) ->
+        put_flash(socket, :error, "Save failed: the configuration directory is unavailable.")
 
-      is_nil(socket.assigns.source_hash) ->
-        put_flash(socket, :error, "Save failed: the source is not available.")
-
-      is_nil(socket.assigns.editable_source) ->
+      is_nil(socket.assigns.editable_source) and not is_nil(socket.assigns.source_hash) ->
         put_flash(
           socket,
           :error,
           "Save refused: this source cannot be edited because it contains secret values."
         )
 
-      is_nil(socket.assigns.config_dir) ->
-        put_flash(socket, :error, "Save failed: the configuration directory is unavailable.")
+      is_nil(socket.assigns.editable_source) ->
+        put_flash(socket, :error, "Save failed: the source is not available for editing.")
+
+      is_nil(socket.assigns.source_hash) and not socket.assigns.source_absent? ->
+        put_flash(socket, :error, "Save failed: the source is not available.")
 
       true ->
         write_source(socket, id, content, expected_hash)
@@ -227,6 +401,7 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   defp write_source(socket, id, content, expected_hash) do
     config_dir = socket.assigns.config_dir
+    expected_hash = normalize_expected_hash(socket, expected_hash)
 
     with {:ok, path} <- Source.path(config_dir, id),
          :ok <- authoritative_path(socket.assigns.snapshot, path),
@@ -264,6 +439,16 @@ defmodule PatchbayWeb.ConfigurationLive do
     end
   end
 
+  defp normalize_expected_hash(socket, expected_hash) do
+    if socket.assigns.source_absent? and expected_hash in [nil, "", "absent"] do
+      :absent
+    else
+      expected_hash
+    end
+  end
+
+  defp authoritative_path(nil, expected) when is_binary(expected), do: :ok
+
   defp authoritative_path(%{definition: %{path: path}}, expected) when is_binary(path) do
     if Path.expand(path) == Path.expand(expected) do
       :ok
@@ -281,12 +466,15 @@ defmodule PatchbayWeb.ConfigurationLive do
           put_flash(socket, :info, "Source saved. Definition reloaded.")
 
         {:error, %Error{} = error} ->
-          put_flash(
-            socket,
-            :error,
-            "Source saved, but the definition is invalid. The last good definition remains active: " <>
-              Error.message(error)
-          )
+          message =
+            if socket.assigns.snapshot do
+              "Source saved, but the definition is invalid. The last good definition remains active: " <>
+                Error.message(error)
+            else
+              "Source saved, but the definition is invalid: " <> Error.message(error)
+            end
+
+          put_flash(socket, :error, message)
 
         {:error, :not_found} ->
           put_flash(
@@ -382,9 +570,38 @@ defmodule PatchbayWeb.ConfigurationLive do
         <section class="channels" aria-label="Definitions">
           <header class="channels-head">
             <h1>DEFINITIONS <span class="count">{length(@definitions)}</span></h1>
+            <button class="filter" type="button" phx-click="new_agent">NEW AGENT</button>
             <button class="filter" type="button" phx-click="reload">RELOAD</button>
             <div class="sort">FAILURES <b>{length(@failures)}</b></div>
           </header>
+
+          <form :if={@new_agent_open} class="new-agent-form" phx-submit="create_agent">
+            <label for="new-agent-id">NEW AGENT ID</label>
+            <div class="new-agent-fields">
+              <input
+                id="new-agent-id"
+                name="agent_id"
+                type="text"
+                value={@new_agent_id}
+                placeholder="agent-id"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <select name="lifecycle" aria-label="Lifecycle">
+                <option value="one-shot" selected={@new_agent_lifecycle == "one-shot"}>
+                  ONE-SHOT
+                </option>
+                <option value="perpetual" selected={@new_agent_lifecycle == "perpetual"}>
+                  PERPETUAL
+                </option>
+              </select>
+              <button class="filter" type="submit">CREATE</button>
+              <button class="filter" type="button" phx-click="cancel_new_agent">CANCEL</button>
+            </div>
+            <p class="source-note">
+              Creates agents/&lt;id&gt;/agent.toml and prompts/. Existing agents are never overwritten.
+            </p>
+          </form>
 
           <div class="strip-cols config-row" aria-hidden="true">
             <span>#</span>
@@ -461,8 +678,8 @@ defmodule PatchbayWeb.ConfigurationLive do
           <header :if={@selected} class="insp-head on-dark">
             <div class="kicker">
               <span class="sel">DEF</span>
-              <span class="kind">{lifecycle_label(@snapshot && @snapshot.definition.lifecycle && @snapshot.definition.lifecycle.kind)}</span>
-              <span class="run-meta">REV <b>{@snapshot && @snapshot.revision}</b></span>
+              <span class="kind">{if @snapshot, do: lifecycle_label(@snapshot.definition.lifecycle && @snapshot.definition.lifecycle.kind), else: "INVALID"}</span>
+              <span class="run-meta">REV <b>{if @snapshot, do: @snapshot.revision, else: "—"}</b></span>
             </div>
             <div class="insp-title">
               <h2>{@selected}</h2>
@@ -479,15 +696,15 @@ defmodule PatchbayWeb.ConfigurationLive do
             <pre class="code-block">{failure_text(@failure.error)}</pre>
           </div>
 
-          <div :if={@snapshot} class="config-detail">
+          <div :if={@selected} class="config-detail">
             <section class="config-section">
               <header class="panel-head">
-                <h3>SOURCE <span>{@snapshot.definition.path || "agent.toml"}</span></h3>
+                <h3>SOURCE <span>{@source_path || "agent.toml"}</span></h3>
                 <span :if={@source_hash} class="panel-meta">SHA {short_hash(@source_hash)}</span>
               </header>
 
               <form :if={@source_editable?} class="source-form" phx-submit="save">
-                <input type="hidden" name="expected_hash" value={@source_hash} />
+                <input type="hidden" name="expected_hash" value={@source_hash || "absent"} />
                 <label class="sr-only" for="source-editor">agent.toml source</label>
                 <textarea
                   id="source-editor"
@@ -509,12 +726,12 @@ defmodule PatchbayWeb.ConfigurationLive do
 
             <section class="config-section">
               <header class="panel-head">
-                <h3>RESOLVED <span>definition</span></h3>
+                <h3>RESOLVED <span>{if @snapshot, do: "definition", else: "validation error"}</span></h3>
               </header>
               <pre class="code-block">{@resolved}</pre>
             </section>
 
-            <section class="config-section">
+            <section :if={@snapshot} class="config-section">
               <header class="panel-head">
                 <h3>PROMPTS <span>{length(@prompts)}</span></h3>
               </header>
@@ -531,7 +748,7 @@ defmodule PatchbayWeb.ConfigurationLive do
               </article>
             </section>
 
-            <section class="config-section">
+            <section :if={@snapshot} class="config-section">
               <header class="panel-head">
                 <h3>SCRIPTS <span>{length(@scripts)}</span></h3>
               </header>
