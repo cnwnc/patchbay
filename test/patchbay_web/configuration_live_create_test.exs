@@ -47,7 +47,7 @@ defmodule PatchbayWeb.ConfigurationLiveCreateTest do
 
     assert {:ok, snapshot} = DefinitionRegistry.get("new-agent")
     assert snapshot.definition.lifecycle.kind == :perpetual
-    assert snapshot.definition.model.name == "default"
+    assert snapshot.definition.model.name == nil
 
     html = render(view)
     assert html =~ "new-agent"

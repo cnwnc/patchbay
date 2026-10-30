@@ -100,7 +100,8 @@ defmodule Patchbay.Config.Source do
   Returns a minimal valid agent source for `id` and `lifecycle`.
 
   `lifecycle` accepts `"one-shot"` or `"perpetual"`; other values fall back
-  to `"one-shot"`.
+  to `"one-shot"`. The generated `[model] name = "default"` selects the
+  manager's configured model instead of naming a provider model literally.
   """
   @spec template(String.t(), String.t()) :: String.t()
   def template(id, lifecycle \\ "one-shot")
@@ -111,6 +112,7 @@ defmodule Patchbay.Config.Source do
     id = #{inspect(id)}
 
     [model]
+    # "default" uses the manager's configured PATCHBAY_LLM_MODEL.
     name = "default"
 
     [lifecycle]

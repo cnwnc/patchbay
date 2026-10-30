@@ -9,7 +9,13 @@ defmodule PatchbayWeb.ConsoleLiveChatTest.FakeRuntime do
 
   @impl true
   def init(opts) do
-    {:ok, %{summary: Keyword.fetch!(opts, :summary), messages: [], calls: []}}
+    {:ok,
+     %{
+       summary: Keyword.fetch!(opts, :summary),
+       events: Keyword.get(opts, :events, []),
+       messages: [],
+       calls: []
+     }}
   end
 
   @impl true
@@ -87,7 +93,7 @@ defmodule PatchbayWeb.ConsoleLiveChatTest.FakeRuntime do
   end
 
   def handle_call({:list_events, agent_id}, _from, state) do
-    {:reply, {:ok, []}, record(state, {:list_events, agent_id})}
+    {:reply, {:ok, state.events}, record(state, {:list_events, agent_id})}
   end
 
   def handle_call({:tool_history, agent_id}, _from, state) do
@@ -253,14 +259,107 @@ defmodule PatchbayWeb.ConsoleLiveChatTest do
     refute render(view) =~ "researcher"
   end
 
-  defp start_fake(summary) do
+  test "keeps model messages as full chat rows with expandable details", %{conn: conn} do
+    content = String.duplicate("A long model answer with useful detail. ", 30)
+
+    _runtime =
+      start_fake(summary("researcher", activity: :waiting),
+        events: [
+          event(:model_message, %{
+            "content" => content,
+            "finish_reason" => "stop",
+            "tool_call_count" => 0
+          })
+        ]
+      )
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "stream-row row-chat is-agent"
+    assert html =~ content
+    assert html =~ "chat-text"
+    refute html =~ "stream-row row-event"
+  end
+
+  test "renders full provider errors inside event details", %{conn: conn} do
+    message = "upstream rejected the request: " <> String.duplicate("detail ", 60)
+
+    _runtime =
+      start_fake(summary("researcher", activity: :waiting),
+        events: [
+          event(:provider_error, %{
+            "kind" => "transport",
+            "message" => message,
+            "status" => 503,
+            "retryable" => true
+          })
+        ]
+      )
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "PROVIDER ERROR"
+    assert html =~ "event-details"
+    assert html =~ "event-detail"
+    assert html =~ message
+    assert html =~ "KIND transport"
+    assert html =~ "STATUS 503"
+  end
+
+  test "flash dismisses on click and when its timer expires", %{conn: conn} do
+    _runtime = start_fake(summary("researcher", activity: :waiting))
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("form.input-row", message: %{content: "hello there"})
+    |> render_submit()
+
+    assert eventually(fn -> render(view) =~ "Sent message to researcher." end)
+    assert has_element?(view, ".flash")
+
+    view |> element(".flash") |> render_click()
+    refute has_element?(view, ".flash")
+    refute render(view) =~ "Sent message to researcher."
+  end
+
+  test "flash expiry respects a paused flash", %{conn: conn} do
+    _runtime = start_fake(summary("researcher", activity: :waiting))
+    {:ok, view, _html} = live(conn, "/")
+
+    view
+    |> form("form.input-row", message: %{content: "hello there"})
+    |> render_submit()
+
+    assert eventually(fn -> render(view) =~ "Sent message to researcher." end)
+
+    render_click(view, "pause_flash", %{"kind" => "info"})
+    send(view.pid, {:expire_flash, "info", "Sent message to researcher."})
+    assert render(view) =~ "Sent message to researcher."
+
+    render_click(view, "resume_flash", %{"kind" => "info"})
+    send(view.pid, {:expire_flash, "info", "Sent message to researcher."})
+    assert eventually(fn -> not (render(view) =~ "Sent message to researcher.") end)
+  end
+
+  defp start_fake(summary, opts \\ []) do
     spec =
-      Supervisor.child_spec({FakeRuntime, summary: summary},
+      Supervisor.child_spec({FakeRuntime, Keyword.merge(opts, summary: summary)},
         id: {:fake_runtime, System.unique_integer([:positive])},
         restart: :temporary
       )
 
     start_supervised!(spec)
+  end
+
+  defp event(type, data) do
+    %Patchbay.Event{
+      id: "#{type}-#{System.unique_integer([:positive])}",
+      sequence: 1,
+      at: DateTime.to_iso8601(DateTime.utc_now()),
+      type: type,
+      agent_id: "researcher",
+      data: data
+    }
   end
 
   defp summary(agent_id, overrides) do

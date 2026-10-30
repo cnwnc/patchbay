@@ -134,6 +134,7 @@ defmodule Patchbay.Config.SourceTest do
 
     assert definition.id == "new-agent"
     assert definition.lifecycle.kind == :perpetual
+    assert definition.model.name == nil
   end
 
   test "create never overwrites an existing agent directory", %{config_dir: config_dir} do

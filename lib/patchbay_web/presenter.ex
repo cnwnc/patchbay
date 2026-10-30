@@ -12,6 +12,10 @@ defmodule PatchbayWeb.Presenter do
     {"fail", "FAIL"}
   ]
 
+  @detail_limit 320
+  @tool_detail_limit 160
+  @trace_window_ms 180_000
+
   def filters, do: @filters
 
   def status_label(:running), do: "RUNNING"
@@ -92,21 +96,56 @@ defmodule PatchbayWeb.Presenter do
   def trace_class(:failed), do: "trace-fail"
   def trace_class(_status), do: "trace-idle"
 
-  def trace_points([]), do: "0,16 76,16"
+  def trace_points(events), do: trace_points(events, DateTime.utc_now())
 
-  def trace_points(events) do
-    events = Enum.take(events, -20)
-    total = length(events)
-    last = max(total - 1, 1)
+  def trace_points(events, now) do
+    now_ms = at_ms(now)
+    cutoff = now_ms - @trace_window_ms
 
-    events
-    |> Enum.with_index()
-    |> Enum.map_join(" ", fn {_event, index} ->
-      x = round(index * 76 / last)
-      y = 15 - round(index * 11 / last)
-      "#{x},#{y}"
-    end)
+    points =
+      events
+      |> Enum.map(fn event -> {at_ms(event_at(event)), event_type(event)} end)
+      |> Enum.filter(fn {at, _type} -> at > cutoff and at <= now_ms end)
+      |> Enum.sort_by(fn {at, _type} -> at end)
+      |> Enum.map(fn {at, type} ->
+        x = round((at - cutoff) * 76 / @trace_window_ms)
+        {x, trace_height(type)}
+      end)
+      |> Enum.uniq_by(fn {x, _y} -> x end)
+
+    case points do
+      [] ->
+        "0,16 76,16"
+
+      points ->
+        [{0, 16} | points]
+        |> Kernel.++([{76, 16}])
+        |> Enum.map_join(" ", fn {x, y} -> "#{x},#{y}" end)
+    end
   end
+
+  defp trace_height(type)
+       when type in [
+              :run_failed,
+              :agent_failed,
+              :agent_start_failed,
+              :agent_stop_failed,
+              :provider_error,
+              :hook_failed
+            ],
+       do: 5
+
+  defp trace_height(type) when type in [:tool_call, :tool_result, :model_tool_call], do: 8
+  defp trace_height(type) when type in [:model_message, :user_message], do: 11
+  defp trace_height(_type), do: 14
+
+  defp event_at(%Event{at: at}), do: at
+  defp event_at(%{at: at}), do: at
+  defp event_at(_event), do: nil
+
+  defp event_type(%Event{type: type}), do: type
+  defp event_type(%{type: type}), do: type
+  defp event_type(_event), do: nil
 
   def context_count(nil), do: {0, "no definition loaded"}
 
@@ -186,6 +225,11 @@ defmodule PatchbayWeb.Presenter do
   def event_label(:agent_woken), do: "WOKEN"
   def event_label(:run_completed), do: "RUN COMPLETED"
   def event_label(:run_failed), do: "RUN FAILED"
+  def event_label(:provider_error), do: "PROVIDER ERROR"
+  def event_label(:agent_failed), do: "AGENT FAILED"
+  def event_label(:hook_started), do: "HOOK STARTED"
+  def event_label(:hook_finished), do: "HOOK FINISHED"
+  def event_label(:hook_failed), do: "HOOK FAILED"
   def event_label(type), do: type |> Atom.to_string() |> String.upcase()
 
   def activity_label(:idle), do: "IDLE"
@@ -195,92 +239,132 @@ defmodule PatchbayWeb.Presenter do
   def activity_label(_activity), do: "IDLE"
 
   def event_summary(event) do
-    data = event.data
-
-    detail =
-      case event.type do
-        :run_started ->
-          join([data_text(data, "kind", nil)])
-
-        :run_resumed ->
-          join([data_text(data, "kind", nil)])
-
-        :attempt_started ->
-          join([
-            "ORDINAL " <> data_text(data, "ordinal", "—"),
-            "WORKER " <> data_text(data, "worker_id", "—")
-          ])
-
-        :instance_ready ->
-          "INSTANCE " <> data_text(data, "instance_id", "—")
-
-        :agent_started ->
-          "WORKER " <> data_text(data, "worker_id", "—")
-
-        :agent_start_failed ->
-          join([
-            "STAGE " <> data_text(data, "stage", "—"),
-            data_text(data, "reason", "")
-          ])
-
-        :agent_stopped ->
-          "REASON " <> data_text(data, "reason", "—")
-
-        :agent_stop_failed ->
-          "REASON " <> data_text(data, "reason", "—")
-
-        :tool_call ->
-          join([
-            data_text(data, "tool_name", "tool"),
-            data_text(data, "arguments", "")
-          ])
-
-        :tool_result ->
-          join([
-            data_text(data, "tool_name", "tool"),
-            data_text(data, "status", "")
-          ])
-
-        :user_message ->
-          truncate(data_text(data, "content", ""), 180)
-
-        :model_message ->
-          join([
-            truncate(data_text(data, "content", ""), 180),
-            finish_reason(data),
-            tool_count(data)
-          ])
-
-        :model_tool_call ->
-          join([
-            data_text(data, "tool_name", "tool"),
-            data_text(data, "arguments", "")
-          ])
-
-        :context_compacted ->
-          join([
-            "REV " <> data_text(data, "revision", "—"),
-            "DROPPED " <> data_text(data, "dropped_messages", "—"),
-            "ARCHIVE " <> data_text(data, "archive_generation", "—")
-          ])
-
-        :agent_waiting ->
-          "AWAITING INPUT"
-
-        :agent_woken ->
-          "OPERATOR MESSAGE"
-
-        :run_completed ->
-          "RESULT RECORDED"
-
-        :run_failed ->
-          data_text(data, "reason", "")
-
-        _type ->
-          ""
-      end
-
+    detail = event_detail(event)
     join([event_label(event.type), detail])
+  end
+
+  def event_detail(%Event{} = event) do
+    data = event.data
+    event_detail(event.type, data)
+  end
+
+  defp event_detail(:run_started, data), do: join([data_text(data, "kind", nil)])
+  defp event_detail(:run_resumed, data), do: join([data_text(data, "kind", nil)])
+
+  defp event_detail(:attempt_started, data) do
+    join([
+      "ORDINAL " <> full_text(data, "ordinal", "—"),
+      "WORKER " <> full_text(data, "worker_id", "—")
+    ])
+  end
+
+  defp event_detail(:instance_ready, data),
+    do: "INSTANCE " <> full_text(data, "instance_id", "—")
+
+  defp event_detail(:agent_started, data), do: "WORKER " <> full_text(data, "worker_id", "—")
+
+  defp event_detail(:agent_start_failed, data) do
+    join([
+      "STAGE " <> full_text(data, "stage", "—"),
+      full_text(data, "reason", "")
+    ])
+  end
+
+  defp event_detail(:agent_stopped, data), do: "REASON " <> full_text(data, "reason", "—")
+  defp event_detail(:agent_stop_failed, data), do: "REASON " <> full_text(data, "reason", "—")
+
+  defp event_detail(:tool_call, data) do
+    join([
+      full_text(data, "tool_name", "tool"),
+      full_text(data, "arguments", "")
+    ])
+  end
+
+  defp event_detail(:tool_result, data) do
+    join([
+      full_text(data, "tool_name", "tool"),
+      full_text(data, "status", "")
+    ])
+  end
+
+  defp event_detail(:user_message, data), do: full_text(data, "content", "")
+
+  defp event_detail(:model_message, data) do
+    join([
+      full_text(data, "content", ""),
+      finish_reason(data),
+      tool_count(data)
+    ])
+  end
+
+  defp event_detail(:model_tool_call, data) do
+    join([
+      full_text(data, "tool_name", "tool"),
+      full_text(data, "arguments", "")
+    ])
+  end
+
+  defp event_detail(:context_compacted, data) do
+    join([
+      "REV " <> full_text(data, "revision", "—"),
+      "DROPPED " <> full_text(data, "dropped_messages", "—"),
+      "ARCHIVE " <> full_text(data, "archive_generation", "—")
+    ])
+  end
+
+  defp event_detail(:agent_waiting, _data), do: "AWAITING INPUT"
+  defp event_detail(:agent_woken, _data), do: "OPERATOR MESSAGE"
+  defp event_detail(:run_completed, _data), do: "RESULT RECORDED"
+  defp event_detail(:run_failed, data), do: full_text(data, "reason", "")
+
+  defp event_detail(:provider_error, data) do
+    join([
+      "KIND " <> full_text(data, "kind", "—"),
+      status_detail(data),
+      retryable_detail(data),
+      full_text(data, "message", "")
+    ])
+  end
+
+  defp event_detail(:agent_failed, data) do
+    join([
+      "STAGE " <> full_text(data, "stage", "—"),
+      full_text(data, "reason", full_text(data, "message", ""))
+    ])
+  end
+
+  defp event_detail(:hook_started, data) do
+    join([
+      "PHASE " <> full_text(data, "phase", "—"),
+      "HOOK " <> full_text(data, "hook", "—")
+    ])
+  end
+
+  defp event_detail(:hook_finished, data) do
+    join([
+      "PHASE " <> full_text(data, "phase", "—"),
+      "HOOK " <> full_text(data, "hook", "—"),
+      full_text(data, "output", "")
+    ])
+  end
+
+  defp event_detail(:hook_failed, data) do
+    join([
+      "PHASE " <> full_text(data, "phase", "—"),
+      "HOOK " <> full_text(data, "hook", "—"),
+      full_text(data, "reason", "")
+    ])
+  end
+
+  defp event_detail(_type, data), do: data_detail(data)
+
+  def event_preview(event) do
+    detail = event_detail(event)
+
+    case detail do
+      "" -> ""
+      detail -> truncate(detail, @detail_limit)
+    end
   end
 
   def stream_items(events, history) do
@@ -292,9 +376,7 @@ defmodule PatchbayWeb.Presenter do
         event.type in [:tool_call, :tool_result] and
           MapSet.member?(history_ids, tool_event_id(event))
       end)
-      |> Enum.map(fn event ->
-        %{kind: :event, at: at_ms(event.at), time: event_time(event), text: event_summary(event)}
-      end)
+      |> Enum.map(&event_item/1)
 
     tool_items =
       Enum.map(history, fn record ->
@@ -303,7 +385,7 @@ defmodule PatchbayWeb.Presenter do
           at: at_ms(record.timestamp),
           time: event_time(record),
           name: record.tool_name,
-          target: truncate(record.arguments, 74),
+          target: truncate(record.arguments, @tool_detail_limit),
           toolkit: record.toolkit_id,
           src: String.first(record.toolkit_id || ""),
           status: String.upcase(record.status),
@@ -311,7 +393,52 @@ defmodule PatchbayWeb.Presenter do
         }
       end)
 
-    (event_items ++ tool_items) |> Enum.sort_by(& &1.at) |> Enum.take(-120)
+    chat_items = Enum.filter(event_items, &(&1.kind == :chat))
+    event_items = Enum.reject(event_items, &(&1.kind == :chat))
+
+    recent = Enum.take(event_items ++ tool_items, -120)
+
+    (chat_items ++ recent) |> Enum.sort_by(& &1.at)
+  end
+
+  defp event_item(%Event{type: :user_message} = event) do
+    %{
+      kind: :chat,
+      role: :operator,
+      type: "OPERATOR",
+      at: at_ms(event.at),
+      time: event_time(event),
+      text: full_text(event.data, "content", ""),
+      meta: nil
+    }
+  end
+
+  defp event_item(%Event{type: :model_message} = event) do
+    %{
+      kind: :chat,
+      role: :agent,
+      type: "AGENT",
+      at: at_ms(event.at),
+      time: event_time(event),
+      text: full_text(event.data, "content", ""),
+      meta: join([finish_reason(event.data), tool_count(event.data)])
+    }
+  end
+
+  defp event_item(%Event{} = event) do
+    label = event_label(event.type)
+    detail = event_detail(event)
+
+    %{
+      kind: :event,
+      at: at_ms(event.at),
+      time: event_time(event),
+      type: "EVENT",
+      label: label,
+      detail: detail,
+      preview: truncate(detail, @detail_limit),
+      text: join([label, truncate(detail, @detail_limit)])
+    }
   end
 
   def definition_map(nil), do: %{}
@@ -543,6 +670,47 @@ defmodule PatchbayWeb.Presenter do
       value -> inspect(value, limit: 6, printable_limit: 300)
     end
   end
+
+  defp full_text(data, key, default) do
+    case Map.get(data, key) do
+      nil -> default
+      value when is_binary(value) -> value
+      value when is_number(value) -> to_string(value)
+      value when is_atom(value) -> Atom.to_string(value)
+      value -> inspect(value, limit: :infinity, printable_limit: :infinity)
+    end
+  end
+
+  defp status_detail(data) do
+    case Map.get(data, "status") do
+      nil -> nil
+      _status -> "STATUS " <> full_text(data, "status", "—")
+    end
+  end
+
+  defp retryable_detail(data) do
+    case Map.get(data, "retryable") do
+      nil -> nil
+      _retryable -> "RETRYABLE " <> full_text(data, "retryable", "—")
+    end
+  end
+
+  defp data_detail(data) when data == %{}, do: ""
+
+  defp data_detail(data) when is_map(data) do
+    data
+    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
+    |> Enum.map_join(" · ", fn {key, value} ->
+      "#{key}: #{value_text(value)}"
+    end)
+  end
+
+  defp data_detail(_data), do: ""
+
+  defp value_text(value) when is_binary(value), do: value
+  defp value_text(value) when is_number(value), do: to_string(value)
+  defp value_text(value) when is_atom(value), do: Atom.to_string(value)
+  defp value_text(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
 
   defp finish_reason(data) do
     case data_text(data, "finish_reason", nil) do

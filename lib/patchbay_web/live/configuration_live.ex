@@ -10,6 +10,7 @@ defmodule PatchbayWeb.ConfigurationLive do
   alias Patchbay.DefinitionRegistry
 
   @pubsub Patchbay.PubSub
+  @flash_timeout 6_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -32,6 +33,10 @@ defmodule PatchbayWeb.ConfigurationLive do
        source_absent?: false,
        source_editable?: false,
        source_note: nil,
+       source_draft: nil,
+       source_baseline: nil,
+       source_dirty?: false,
+       pending_select: nil,
        config_dir: nil,
        resolved: "",
        prompts: [],
@@ -45,32 +50,89 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, load(socket, params["id"])}
+    requested_id = params["id"]
+
+    socket =
+      if discard_draft?(socket, requested_id) do
+        socket
+        |> assign(source_draft: nil, source_dirty?: false)
+        |> notify(:info, "Discarded unsaved changes to #{socket.assigns.selected}.")
+      else
+        socket
+      end
+
+    {:noreply, load(socket, requested_id)}
   end
 
   @impl true
   def handle_event("select", %{"id" => id}, socket) do
-    {:noreply, push_patch(socket, to: ~p"/config/#{id}")}
+    cond do
+      id == socket.assigns.selected ->
+        {:noreply, assign(socket, pending_select: nil)}
+
+      socket.assigns.source_dirty? ->
+        {:noreply, assign(socket, pending_select: id)}
+
+      true ->
+        {:noreply, push_patch(socket, to: ~p"/config/#{id}")}
+    end
   end
 
-  @impl true
-  def handle_event("reload", _params, socket) do
+  def handle_event("confirm_select", _params, socket) do
+    case socket.assigns.pending_select do
+      nil ->
+        {:noreply, socket}
+
+      id ->
+        socket = assign(socket, pending_select: nil, source_draft: nil, source_dirty?: false)
+        {:noreply, push_patch(socket, to: ~p"/config/#{id}")}
+    end
+  end
+
+  def handle_event("cancel_select", _params, socket) do
+    {:noreply, assign(socket, pending_select: nil)}
+  end
+
+  def handle_event("dismiss_flash", %{"kind" => kind}, socket) do
+    kind = flash_kind(kind)
+    paused = MapSet.delete(paused_flashes(socket), kind)
+
+    {:noreply,
+     socket
+     |> assign(:paused_flashes, paused)
+     |> clear_flash(kind)}
+  end
+
+  def handle_event("pause_flash", %{"kind" => kind}, socket) do
+    {:noreply,
+     assign(socket, :paused_flashes, MapSet.put(paused_flashes(socket), flash_kind(kind)))}
+  end
+
+  def handle_event("resume_flash", %{"kind" => kind}, socket) do
+    kind = flash_kind(kind)
+
     socket =
-      case safe(fn -> DefinitionRegistry.reload() end) do
-        {:ok, report} ->
-          Phoenix.PubSub.broadcast_from(@pubsub, self(), "config", {:config, :reloaded})
+      assign(socket, :paused_flashes, MapSet.delete(paused_flashes(socket), kind))
 
-          put_flash(
-            socket,
-            :info,
-            "Reloaded: #{length(report.loaded)} loaded, #{length(report.rejected)} rejected, #{length(report.removed)} removed."
-          )
+    case Map.fetch(socket.assigns.flash, kind) do
+      {:ok, message} ->
+        Process.send_after(self(), {:expire_flash, kind, message}, @flash_timeout)
+        {:noreply, socket}
 
-        {:error, reason} ->
-          put_flash(socket, :error, "Reload failed: #{error_detail(reason)}")
-      end
+      :error ->
+        {:noreply, socket}
+    end
+  end
 
-    {:noreply, load(socket, socket.assigns.selected)}
+  def handle_event("edit_source", params, socket) do
+    {content, _expected_hash} = save_params(params)
+
+    if is_binary(content) do
+      dirty? = content != socket.assigns.source_baseline
+      {:noreply, assign(socket, source_draft: content, source_dirty?: dirty?)}
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -92,13 +154,48 @@ defmodule PatchbayWeb.ConfigurationLive do
   end
 
   @impl true
+  def handle_event("reload", _params, socket) do
+    socket =
+      case safe(fn -> DefinitionRegistry.reload() end) do
+        {:ok, report} ->
+          Phoenix.PubSub.broadcast_from(@pubsub, self(), "config", {:config, :reloaded})
+
+          notify(
+            socket,
+            :info,
+            "Reloaded: #{length(report.loaded)} loaded, #{length(report.rejected)} rejected, #{length(report.removed)} removed."
+          )
+
+        {:error, reason} ->
+          notify(socket, :error, "Reload failed: #{error_detail(reason)}")
+      end
+
+    {:noreply, load(socket, socket.assigns.selected, reset_source: true)}
+  end
+
+  @impl true
   def handle_info({:config, :reloaded}, socket) do
     {:noreply, load(socket, socket.assigns.selected)}
   end
 
+  def handle_info({:expire_flash, kind, message}, socket) do
+    expired? =
+      not MapSet.member?(paused_flashes(socket), kind) and
+        Map.get(socket.assigns.flash, kind) == message
+
+    socket =
+      if expired? do
+        clear_flash(socket, kind)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_info(:tick, socket), do: {:noreply, assign(socket, now: DateTime.utc_now())}
 
-  defp load(socket, requested_id) do
+  defp load(socket, requested_id, opts \\ []) do
     definitions =
       case safe(fn -> DefinitionRegistry.list() end) do
         definitions when is_list(definitions) -> definitions
@@ -134,25 +231,61 @@ defmodule PatchbayWeb.ConfigurationLive do
     prompts = if definition, do: definition.prompts, else: []
     scripts = if definition, do: definition.shared_scripts ++ definition.agent_scripts, else: []
 
-    assign(socket,
+    socket
+    |> assign(
       definitions: definitions,
       failures: failures,
       selected: selected,
       snapshot: snapshot,
       failure: failure,
-      source: source_info.display,
-      editable_source: source_info.editable,
-      source_hash: source_info.hash,
-      source_path: source_info.path,
-      source_absent?: source_info.absent,
-      source_editable?: not is_nil(source_info.editable),
-      source_note: source_info.note,
       config_dir: config_dir,
       resolved: resolved,
       prompts: prompts,
       scripts: scripts,
       now: DateTime.utc_now()
     )
+    |> assign(source_assigns(source_info, socket, selected, opts))
+  end
+
+  defp source_assigns(source_info, socket, selected, opts) do
+    if preserve_draft?(socket, selected, opts) do
+      Map.take(socket.assigns, [
+        :source,
+        :editable_source,
+        :source_hash,
+        :source_path,
+        :source_absent?,
+        :source_editable?,
+        :source_note,
+        :source_draft,
+        :source_baseline,
+        :source_dirty?
+      ])
+    else
+      %{
+        source: source_info.display,
+        editable_source: source_info.editable,
+        source_hash: source_info.hash,
+        source_path: source_info.path,
+        source_absent?: source_info.absent,
+        source_editable?: not is_nil(source_info.editable),
+        source_note: source_info.note,
+        source_draft: source_info.editable,
+        source_baseline: source_info.editable,
+        source_dirty?: false
+      }
+    end
+  end
+
+  defp preserve_draft?(socket, selected, opts) do
+    not Keyword.get(opts, :reset_source, false) and
+      selected == socket.assigns.selected and
+      not is_nil(socket.assigns.source_draft)
+  end
+
+  defp discard_draft?(socket, requested_id) do
+    socket.assigns.source_dirty? and is_binary(requested_id) and
+      requested_id != socket.assigns.selected
   end
 
   defp select_id(definitions, failures, nil) do
@@ -203,7 +336,7 @@ defmodule PatchbayWeb.ConfigurationLive do
             hash: nil,
             path: path,
             absent: true,
-            note: "Saving creates agent.toml atomically if it is still absent."
+            note: nil
           }
 
         {:error, reason} ->
@@ -325,7 +458,7 @@ defmodule PatchbayWeb.ConfigurationLive do
 
             socket
             |> assign(new_agent_open: false, new_agent_id: "", new_agent_lifecycle: "one-shot")
-            |> put_flash(level, message)
+            |> notify(level, message)
             |> push_patch(to: ~p"/config/#{created_id}")
 
           {:error, :exists} ->
@@ -348,7 +481,7 @@ defmodule PatchbayWeb.ConfigurationLive do
   defp new_agent_error(socket, id, lifecycle, detail) do
     socket
     |> assign(new_agent_open: true, new_agent_id: id, new_agent_lifecycle: lifecycle)
-    |> put_flash(:error, "Create failed: #{detail}.")
+    |> notify(:error, "Create failed: #{detail}.")
   end
 
   defp reload_created(id) do
@@ -373,26 +506,26 @@ defmodule PatchbayWeb.ConfigurationLive do
 
     cond do
       is_nil(id) ->
-        put_flash(socket, :error, "Save failed: no definition is selected.")
+        notify(socket, :error, "Save failed: no definition is selected.")
 
       is_nil(content) ->
-        put_flash(socket, :error, "Save failed: no source was submitted.")
+        notify(socket, :error, "Save failed: no source was submitted.")
 
       is_nil(socket.assigns.config_dir) ->
-        put_flash(socket, :error, "Save failed: the configuration directory is unavailable.")
+        notify(socket, :error, "Save failed: the configuration directory is unavailable.")
 
       is_nil(socket.assigns.editable_source) and not is_nil(socket.assigns.source_hash) ->
-        put_flash(
+        notify(
           socket,
           :error,
           "Save refused: this source cannot be edited because it contains secret values."
         )
 
       is_nil(socket.assigns.editable_source) ->
-        put_flash(socket, :error, "Save failed: the source is not available for editing.")
+        notify(socket, :error, "Save failed: the source is not available for editing.")
 
       is_nil(socket.assigns.source_hash) and not socket.assigns.source_absent? ->
-        put_flash(socket, :error, "Save failed: the source is not available.")
+        notify(socket, :error, "Save failed: the source is not available.")
 
       true ->
         write_source(socket, id, content, expected_hash)
@@ -410,32 +543,32 @@ defmodule PatchbayWeb.ConfigurationLive do
     else
       {:error, :stale} ->
         socket
-        |> load(id)
-        |> put_flash(
+        |> load(id, reset_source: true)
+        |> notify(
           :error,
           "Save conflict: the source changed on disk after it was loaded. Review it and save again."
         )
 
       {:error, :not_found} ->
         socket
-        |> load(id)
-        |> put_flash(:error, "Save failed: the source file no longer exists.")
+        |> load(id, reset_source: true)
+        |> notify(:error, "Save failed: the source file no longer exists.")
 
       {:error, :not_authoritative} ->
-        put_flash(
+        notify(
           socket,
           :error,
           "Save failed: the selected definition does not own this source file."
         )
 
       {:error, :invalid_id} ->
-        put_flash(socket, :error, "Save failed: invalid definition identifier.")
+        notify(socket, :error, "Save failed: invalid definition identifier.")
 
       {:error, {:io, reason}} ->
-        put_flash(socket, :error, "Save failed: #{:file.format_error(reason)}")
+        notify(socket, :error, "Save failed: #{:file.format_error(reason)}")
 
       {:error, reason} ->
-        put_flash(socket, :error, "Save failed: #{error_detail(reason)}")
+        notify(socket, :error, "Save failed: #{error_detail(reason)}")
     end
   end
 
@@ -463,7 +596,7 @@ defmodule PatchbayWeb.ConfigurationLive do
     socket =
       case safe(fn -> DefinitionRegistry.reload_agent(id) end) do
         {:ok, _snapshot} ->
-          put_flash(socket, :info, "Source saved. Definition reloaded.")
+          notify(socket, :info, "Source saved. Definition reloaded.")
 
         {:error, %Error{} = error} ->
           message =
@@ -474,21 +607,21 @@ defmodule PatchbayWeb.ConfigurationLive do
               "Source saved, but the definition is invalid: " <> Error.message(error)
             end
 
-          put_flash(socket, :error, message)
+          notify(socket, :error, message)
 
         {:error, :not_found} ->
-          put_flash(
+          notify(
             socket,
             :error,
             "Source saved, but the definition directory was not found during reload."
           )
 
         {:error, reason} ->
-          put_flash(socket, :error, "Source saved, but reload failed: #{error_detail(reason)}")
+          notify(socket, :error, "Source saved, but reload failed: #{error_detail(reason)}")
       end
 
     Phoenix.PubSub.broadcast_from(@pubsub, self(), "config", {:config, :reloaded})
-    load(socket, id)
+    load(socket, id, reset_source: true)
   end
 
   defp save_params(%{"source" => %{"content" => content} = source} = params)
@@ -516,6 +649,17 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   defp failure_for(_failures, nil), do: nil
   defp failure_for(failures, id), do: Enum.find(failures, &(&1.id == id))
+
+  defp notify(socket, kind, message) do
+    Process.send_after(self(), {:expire_flash, kind, message}, @flash_timeout)
+    put_flash(socket, kind, message)
+  end
+
+  defp paused_flashes(socket), do: Map.get(socket.assigns, :paused_flashes, MapSet.new())
+
+  defp flash_kind("info"), do: "info"
+  defp flash_kind("error"), do: "error"
+  defp flash_kind(_kind), do: nil
 
   defp safe(fun) do
     fun.()
@@ -560,7 +704,10 @@ defmodule PatchbayWeb.ConfigurationLive do
           <span class="view">CONFIGURATION</span>
         </div>
         <div class="mast-right">
-          <a class="nav-link" href={~p"/"}>CONSOLE</a>
+          <nav class="global-nav" aria-label="Global navigation">
+           <a class="nav-link" href={~p"/"}>CONSOLE</a>
+           <a class="nav-link is-active" href={~p"/config"} aria-current="page">CONFIG</a>
+          </nav>
           <span class="local">DEFINITIONS <b>{length(@definitions)}</b></span>
           <time class="clock">{Calendar.strftime(@now, "%H:%M:%S")} <small>UTC</small></time>
         </div>
@@ -598,9 +745,6 @@ defmodule PatchbayWeb.ConfigurationLive do
               <button class="filter" type="submit">CREATE</button>
               <button class="filter" type="button" phx-click="cancel_new_agent">CANCEL</button>
             </div>
-            <p class="source-note">
-              Creates agents/&lt;id&gt;/agent.toml and prompts/. Existing agents are never overwritten.
-            </p>
           </form>
 
           <div class="strip-cols config-row" aria-hidden="true">
@@ -697,24 +841,43 @@ defmodule PatchbayWeb.ConfigurationLive do
           </div>
 
           <div :if={@selected} class="config-detail">
+            <div :if={@pending_select} class="source-confirm" role="alertdialog" aria-label="Unsaved changes">
+              <p>Discard unsaved changes to {@selected}?</p>
+              <div class="source-confirm-actions">
+                <button class="filter" type="button" phx-click="confirm_select">
+                  DISCARD AND SWITCH
+                </button>
+                <button class="filter" type="button" phx-click="cancel_select">
+                  KEEP EDITING
+                </button>
+              </div>
+            </div>
+
             <section class="config-section">
               <header class="panel-head">
                 <h3>SOURCE <span>{@source_path || "agent.toml"}</span></h3>
                 <span :if={@source_hash} class="panel-meta">SHA {short_hash(@source_hash)}</span>
               </header>
 
-              <form :if={@source_editable?} class="source-form" phx-submit="save">
+              <form
+                :if={@source_editable?}
+                id="source-form"
+                class="source-form"
+                phx-submit="save"
+                phx-change="edit_source"
+              >
                 <input type="hidden" name="expected_hash" value={@source_hash || "absent"} />
-                <label class="sr-only" for="source-editor">agent.toml source</label>
                 <textarea
                   id="source-editor"
                   class="source-editor"
                   name="source"
                   rows="24"
                   spellcheck="false"
-                >{@editable_source}</textarea>
+                  aria-label="agent.toml source"
+                  phx-debounce="200"
+                >{@source_draft}</textarea>
                 <div class="source-actions">
-                  <span class="source-note">ATOMIC REPLACE · STALE WRITES CONFLICT</span>
+                  <span :if={@source_dirty?} class="source-dirty">UNSAVED CHANGES</span>
                   <button class="filter" type="submit">SAVE SOURCE</button>
                 </div>
               </form>

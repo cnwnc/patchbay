@@ -85,7 +85,7 @@ Unknown top-level keys and unknown keys in most tables are ignored. Validation e
 
 | Key | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `name` | string | yes | — | Model name sent in provider requests. Takes precedence over `PATCHBAY_LLM_MODEL` and `OPENAI_MODEL`. |
+| `name` | string | no | configured model | Provider model sent in requests. Omit it, or write `"default"`, to use the configured `PATCHBAY_LLM_MODEL`, then `OPENAI_MODEL`; any other value is sent literally. |
 | `provider` | string | no | `"default"` | Stored on the definition. Provider selection is the manager's configured provider module, currently the OpenAI-compatible provider; this field does not select a module. |
 | `reasoning` | string | no | — | Stored on the definition. It is not forwarded to the provider. |
 
@@ -437,7 +437,7 @@ The manager resolves provider settings from its own environment; workers do not 
 - API key: `PATCHBAY_LLM_API_KEY`, then `OPENAI_API_KEY`
 - model: `PATCHBAY_LLM_MODEL`, then `OPENAI_MODEL`
 
-The agent's `[model] name` takes precedence over the environment model. The OpenAI-compatible provider requires an API key only when the base URL is the default OpenAI URL; a custom base URL may run without one. No dotenv file is read.
+An explicit agent `[model] name` takes precedence over the environment model. An omitted `name`, or `"default"`, resolves to the configured environment model; a run cannot start when neither is set. The OpenAI-compatible provider requires an API key only when the base URL is the default OpenAI URL; a custom base URL may run without one. No dotenv file is read.
 
 Non-secret values such as the base URL can use `services.patchbay.manager.environment`. Put `PATCHBAY_LLM_API_KEY` or `OPENAI_API_KEY` in a manager environment file configured with `services.patchbay.manager.environmentFiles`.
 

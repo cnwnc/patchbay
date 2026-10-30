@@ -1,6 +1,11 @@
 defmodule Patchbay.Definition.Model do
   @moduledoc """
   The model provider selected for an agent.
+
+  `name` selects the provider model for requests. Omitting it, or setting it to
+  `"default"`, uses the manager's configured model (`PATCHBAY_LLM_MODEL`, then
+  `OPENAI_MODEL`) and is stored as `nil`. Any other value is sent to the
+  provider as written.
   """
 
   alias Patchbay.Definition.Parse
@@ -25,13 +30,16 @@ defmodule Patchbay.Definition.Model do
         result -> result
       end
 
-    {name, errors} = Parse.required_string(raw, "name", ["model", "name"], errors)
+    {name, errors} = Parse.optional_string(raw, "name", ["model", "name"], errors)
     {reasoning, errors} = Parse.optional_string(raw, "reasoning", ["model", "reasoning"], errors)
 
-    {%__MODULE__{provider: provider, name: name, reasoning: reasoning}, errors}
+    {%__MODULE__{provider: provider, name: explicit_name(name), reasoning: reasoning}, errors}
   end
 
   def from_map(_raw, errors) do
     {nil, Parse.error(errors, ["model"], "must be a table")}
   end
+
+  defp explicit_name("default"), do: nil
+  defp explicit_name(name), do: name
 end

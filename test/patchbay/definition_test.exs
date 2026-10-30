@@ -267,6 +267,30 @@ defmodule Patchbay.DefinitionTest do
       assert error?(errors, ["lifecycle"], "is required")
     end
 
+    test "an omitted or default model name selects the configured model" do
+      for name <- [nil, ~s(name = "default")] do
+        body = """
+        format-version = 1
+        id = "researcher"
+
+        [model]
+        provider = "default"
+        #{name || ""}
+
+        [lifecycle]
+        kind = "one-shot"
+        """
+
+        assert {:ok, %Agent{model: model}} = Definition.parse(body)
+        assert model.name == nil
+      end
+    end
+
+    test "an explicit model name is preserved" do
+      assert {:ok, %Agent{model: model}} = Definition.parse(minimal())
+      assert model.name == "model-name"
+    end
+
     test "rejects non-table sections and non-list declarations" do
       errors =
         parse_errors("""

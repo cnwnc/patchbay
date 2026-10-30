@@ -10,6 +10,7 @@ defmodule PatchbayWeb.ConsoleLive do
   alias Patchbay.Runtime
 
   @pubsub Patchbay.PubSub
+  @flash_timeout 6_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -78,6 +79,37 @@ defmodule PatchbayWeb.ConsoleLive do
     {:noreply, submit_message(socket, :steer, message_content(params, socket.assigns.draft))}
   end
 
+  def handle_event("dismiss_flash", %{"kind" => kind}, socket) do
+    kind = flash_kind(kind)
+    paused = MapSet.delete(paused_flashes(socket), kind)
+
+    {:noreply,
+     socket
+     |> assign(:paused_flashes, paused)
+     |> clear_flash(kind)}
+  end
+
+  def handle_event("pause_flash", %{"kind" => kind}, socket) do
+    {:noreply,
+     assign(socket, :paused_flashes, MapSet.put(paused_flashes(socket), flash_kind(kind)))}
+  end
+
+  def handle_event("resume_flash", %{"kind" => kind}, socket) do
+    kind = flash_kind(kind)
+
+    socket =
+      assign(socket, :paused_flashes, MapSet.delete(paused_flashes(socket), kind))
+
+    case Map.fetch(socket.assigns.flash, kind) do
+      {:ok, message} ->
+        Process.send_after(self(), {:expire_flash, kind, message}, @flash_timeout)
+        {:noreply, socket}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({:patchbay_event, %{type: :model_delta} = event}, socket) do
     socket =
@@ -92,12 +124,38 @@ defmodule PatchbayWeb.ConsoleLive do
     {:noreply, socket}
   end
 
+  def handle_info({:patchbay_event, %{type: :model_message} = event}, socket) do
+    socket =
+      if socket.assigns.selected == event.agent_id do
+        socket |> refresh() |> assign(:stream_delta, nil)
+      else
+        refresh_agents(socket)
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_info({:patchbay_event, event}, socket) do
     socket =
       if socket.assigns.selected == event.agent_id do
         refresh(socket)
       else
         refresh_agents(socket)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:expire_flash, kind, message}, socket) do
+    expired? =
+      not MapSet.member?(paused_flashes(socket), kind) and
+        Map.get(socket.assigns.flash, kind) == message
+
+    socket =
+      if expired? do
+        clear_flash(socket, kind)
+      else
+        socket
       end
 
     {:noreply, socket}
@@ -142,10 +200,10 @@ defmodule PatchbayWeb.ConsoleLive do
     socket =
       case result do
         {:ok, _summary} ->
-          put_flash(socket, :info, outcome_message(action, agent_id, :ok))
+          notify(socket, :info, outcome_message(action, agent_id, :ok))
 
         {:error, reason} ->
-          put_flash(socket, :error, outcome_message(action, agent_id, reason))
+          notify(socket, :error, outcome_message(action, agent_id, reason))
       end
 
     {:noreply, socket |> refresh() |> select_if_present(agent_id)}
@@ -159,12 +217,12 @@ defmodule PatchbayWeb.ConsoleLive do
         {:ok, _summary} ->
           socket
           |> assign(pending_text: nil)
-          |> put_flash(:info, outcome_message(action, agent_id, :ok))
+          |> notify(:info, outcome_message(action, agent_id, :ok))
 
         {:error, reason} ->
           socket
           |> assign(draft: socket.assigns.pending_text || "", pending_text: nil)
-          |> put_flash(:error, outcome_message(action, agent_id, reason))
+          |> notify(:error, outcome_message(action, agent_id, reason))
       end
 
     {:noreply, socket |> refresh() |> select_if_present(agent_id)}
@@ -434,6 +492,17 @@ defmodule PatchbayWeb.ConsoleLive do
   defp message_content(%{"content" => content}, _fallback) when is_binary(content), do: content
   defp message_content(_params, fallback), do: fallback
 
+  defp notify(socket, kind, message) do
+    Process.send_after(self(), {:expire_flash, kind, message}, @flash_timeout)
+    put_flash(socket, kind, message)
+  end
+
+  defp paused_flashes(socket), do: Map.get(socket.assigns, :paused_flashes, MapSet.new())
+
+  defp flash_kind("info"), do: "info"
+  defp flash_kind("error"), do: "error"
+  defp flash_kind(_kind), do: nil
+
   defp pending_agent_id({_action, agent_id}), do: agent_id
   defp pending_agent_id(_pending), do: nil
 
@@ -527,9 +596,12 @@ defmodule PatchbayWeb.ConsoleLive do
   end
 
   defp row_class(%{kind: :event}), do: "stream-row row-event"
+  defp row_class(%{kind: :chat, role: :operator}), do: "stream-row row-chat is-operator"
+  defp row_class(%{kind: :chat}), do: "stream-row row-chat is-agent"
   defp row_class(%{kind: :tool} = item), do: "stream-row row-tool #{item.tone}"
 
   defp row_type(%{kind: :tool}), do: "TOOL"
+  defp row_type(%{kind: :chat} = item), do: item.type
   defp row_type(_item), do: "EVENT"
 
   defp selected_index(nil, _agents), do: "—"
@@ -569,7 +641,10 @@ defmodule PatchbayWeb.ConsoleLive do
           <span class="view">CONSOLE</span>
         </div>
         <div class="mast-right">
-          <a class="nav-link" href={~p"/config"}>CONFIG</a>
+          <nav class="global-nav" aria-label="Global navigation">
+            <a class="nav-link is-active" href={~p"/"} aria-current="page">CONSOLE</a>
+            <a class="nav-link" href={~p"/config"}>CONFIG</a>
+          </nav>
           <span class="local">
             <span class={"lamp #{if @control == :connected, do: "live", else: "idle"}"}></span>
             CONTROL <b>{if @control == :connected, do: "CONNECTED", else: "DISCONNECTED"}</b>
@@ -630,7 +705,7 @@ defmodule PatchbayWeb.ConsoleLive do
                   preserveAspectRatio="none"
                   aria-hidden="true"
                 >
-                  <polyline points={trace_points(Map.get(@events_by_agent, agent.agent_id, []))} />
+                  <polyline points={trace_points(Map.get(@events_by_agent, agent.agent_id, []), @now)} />
                 </svg>
               </div>
               <div class="ctx" aria-label="Context policy">
@@ -773,12 +848,22 @@ defmodule PatchbayWeb.ConsoleLive do
               <span>DETAIL</span>
             </div>
 
-            <ol class="stream-list" aria-live="polite">
+            <ol id="stream-list" class="stream-list" aria-live="polite" phx-hook="PatchbayStream">
               <li :for={item <- @stream} class={row_class(item)}>
                 <time class="row-time">{item.time}</time>
                 <span class="row-type">{row_type(item)}</span>
                 <div class="row-body">
-                  <span :if={item.kind == :event} class="event-text">{item.text}</span>
+                  <details :if={item.kind == :event} class="event-details">
+                    <summary class="event-summary">
+                      <span class="event-label">{item.label}</span>
+                      <span :if={item.preview != ""} class="event-preview">{item.preview}</span>
+                    </summary>
+                    <div :if={item.detail != ""} class="event-detail">{item.detail}</div>
+                  </details>
+                  <div :if={item.kind == :chat} class="chat-body">
+                    <p class="chat-text">{item.text}</p>
+                    <span :if={item.meta} class="chat-meta">{item.meta}</span>
+                  </div>
                   <div :if={item.kind == :tool} class="tool-grid">
                     <span class="tool-name">{item.name}</span>
                     <span class="tool-target">{item.target}</span>

@@ -622,6 +622,26 @@ defmodule Patchbay.AgentRunnerTest do
     assert agent.message_count == 0
   end
 
+  test "a default model name uses the provider environment model" do
+    definition = %{definition() | model: %Patchbay.Definition.Model{name: nil}}
+
+    env = %{"PATCHBAY_LLM_MODEL" => "env-model", "PATCHBAY_LLM_API_KEY" => "key"}
+
+    assert :ok =
+             Patchbay.AgentRunner.validate_provider(
+               Patchbay.Provider.OpenAI,
+               [env: env],
+               definition
+             )
+
+    assert {:error, {:provider_not_configured, :model}} =
+             Patchbay.AgentRunner.validate_provider(
+               Patchbay.Provider.OpenAI,
+               [env: %{"PATCHBAY_LLM_API_KEY" => "key"}],
+               definition
+             )
+  end
+
   test "send_message wakes a waiting agent and is included in the next turn", context do
     definition = definition()
 
