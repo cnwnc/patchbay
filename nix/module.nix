@@ -98,31 +98,31 @@ in {
 
     package = mkOption {
       type = types.package;
-      description = "Patchbay package providing the run-manager and run-worker-supervisor commands.";
+      description = "Patchbay package providing the patchbay command.";
     };
 
     user = mkOption {
       type = types.str;
       default = "patchbay";
-      description = "User that runs the manager and owns transcripts.";
+      description = "User that runs the manager.";
     };
 
     group = mkOption {
       type = types.str;
       default = "patchbay";
-      description = "Primary group of the manager and the group that owns its state, runtime, and config directories.";
+      description = "Group of the manager and owner of its state, runtime, and config directories.";
     };
 
     agentUser = mkOption {
       type = types.str;
       default = "patchbay-agent";
-      description = "User that runs the worker supervisor and the workers it spawns.";
+      description = "User that runs the worker supervisor and its workers.";
     };
 
     agentGroup = mkOption {
       type = types.str;
       default = "patchbay-agent";
-      description = "Primary group of the worker supervisor and its workers.";
+      description = "Group of the worker supervisor and its workers.";
     };
 
     configDir = mkOption {
@@ -134,7 +134,7 @@ in {
     stateDir = mkOption {
       type = types.str;
       default = "/var/lib/patchbay";
-      description = "Manager state directory, including transcripts. Kept private to the manager user.";
+      description = "Manager state and transcript directory.";
     };
 
     runtimeDir = mkOption {
@@ -146,7 +146,7 @@ in {
     agentStateDir = mkOption {
       type = types.str;
       default = "/var/lib/patchbay-agent";
-      description = "Worker supervisor state directory, separate from manager transcripts.";
+      description = "Worker supervisor state directory.";
     };
 
     agentRuntimeDir = mkOption {
@@ -158,74 +158,53 @@ in {
     controlTokenFile = mkOption {
       type = types.str;
       default = "/run/patchbay/control-token.env";
-      description = ''
-        systemd EnvironmentFile holding PATCHBAY_CONTROL_TOKEN. It is created
-        root-owned with mode 0600 and loaded by both services, so the agent user
-        and the workers it starts cannot read the token. The token is never
-        passed on a command line.
-      '';
+      description = "Environment file containing PATCHBAY_CONTROL_TOKEN, generated if absent.";
     };
 
     uiTokenFile = mkOption {
       type = types.str;
       default = "${config.services.patchbay.runtimeDir}/ui-token.env";
-      description = ''
-        systemd EnvironmentFile holding PATCHBAY_UI_TOKEN, the HTTP Basic
-        password for the Console and Configuration UI. It is created
-        root-owned with mode 0600 and loaded only by the manager, so neither
-        the agent user nor the workers can read it. The token is never passed
-        on a command line or written to the Nix store.
-      '';
+      description = "Environment file containing PATCHBAY_UI_TOKEN, generated if absent.";
     };
 
     secretKeyBaseFile = mkOption {
       type = types.str;
       default = "${config.services.patchbay.stateDir}/secret-key-base";
-      description = ''
-        systemd EnvironmentFile containing SECRET_KEY_BASE, generated if absent.
-        It is created root-owned with mode 0600, loaded only by the manager, and
-        is not placed in the Nix store.
-      '';
+      description = "Environment file containing SECRET_KEY_BASE, generated if absent.";
     };
 
     signingSaltsFile = mkOption {
       type = types.str;
       default = "${config.services.patchbay.stateDir}/web-signing-salts.env";
       description = ''
-        systemd EnvironmentFile containing PATCHBAY_SESSION_SIGNING_SALT and
-        PATCHBAY_LIVE_VIEW_SIGNING_SALT, generated if absent. It is created
-        root-owned with mode 0600, loaded only by the manager, and is not placed
-        in the Nix store.
+        Environment file containing PATCHBAY_SESSION_SIGNING_SALT and
+        PATCHBAY_LIVE_VIEW_SIGNING_SALT, generated if absent.
       '';
     };
 
     environment = mkOption {
       type = types.attrsOf types.str;
       default = {};
-      description = "Additional non-secret environment variables for both services.";
+      description = "Additional environment variables for both services.";
     };
 
     environmentFiles = mkOption {
       type = types.listOf types.str;
       default = [];
-      description = ''
-        Additional environment files loaded by both services. The manager-only
-        control token, secret key base, and signing salts use dedicated
-        root-only files, so do not repeat them here.
-      '';
+      description = "Additional environment files loaded by both services.";
     };
 
     extraPackages = mkOption {
       type = types.listOf types.package;
       default = [];
-      description = "Packages added to PATH for both services and their children.";
+      description = "Packages added to PATH for both services.";
     };
 
     manager = {
       supervisorHost = mkOption {
         type = types.str;
         default = "127.0.0.1";
-        description = "Loopback host of the worker supervisor control listener.";
+        description = "Host of the worker supervisor control listener.";
       };
 
       supervisorPort = mkOption {
@@ -237,13 +216,13 @@ in {
       listenPort = mkOption {
         type = types.port;
         default = 0;
-        description = "Manager worker-facing listen port. Zero asks the kernel for a free port.";
+        description = "Manager worker-facing listen port; 0 picks a free port.";
       };
 
       webPort = mkOption {
         type = types.port;
         default = 4000;
-        description = "Loopback port for the manager's Phoenix endpoint.";
+        description = "Port for the manager's Phoenix endpoint.";
       };
 
       transcriptDir = mkOption {
@@ -261,7 +240,7 @@ in {
       environment = mkOption {
         type = types.attrsOf types.str;
         default = {};
-        description = "Additional non-secret environment variables for the manager service.";
+        description = "Additional environment variables for the manager service.";
       };
 
       environmentFiles = mkOption {
@@ -281,7 +260,7 @@ in {
       listenPort = mkOption {
         type = types.ints.between 1 65535;
         default = 7001;
-        description = "Loopback port the worker supervisor listens on.";
+        description = "Port the worker supervisor listens on.";
       };
 
       maxWorkers = mkOption {
@@ -293,52 +272,40 @@ in {
       operationsFile = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Absolute path passed to run-worker-supervisor as --operations.";
+        description = "Path passed to run-worker-supervisor as --operations.";
       };
 
       workspace = mkOption {
         type = types.nullOr types.str;
         default = null;
         description = ''
-          Absolute worker workspace passed as --workspace. Prefer workspaceRoot
-          for per-agent workspaces. The directory must exist and be writable by
-          the agent user. ProtectHome= in the service means workspaces below
-          /home are not reachable.
+          Worker workspace passed as --workspace. Must exist and be writable by
+          the agent user.
         '';
       };
 
       workspaceRoot = mkOption {
         type = types.nullOr types.str;
         default = "${config.services.patchbay.agentStateDir}/workspaces";
-        description = ''
-          Agent-owned root for per-agent workspaces. The worker supervisor
-          creates and owns the per-agent subdirectory; the manager only supplies
-          the path. It is exposed to the manager as PATCHBAY_WORKSPACE_DIR.
-        '';
+        description = "Root directory for per-agent workspaces.";
       };
 
       resultRoot = mkOption {
         type = types.nullOr types.str;
         default = "${config.services.patchbay.agentStateDir}/results";
-        description = ''
-          Agent-owned root for per-agent result directories. The worker
-          supervisor creates each per-agent directory under this root.
-        '';
+        description = "Root directory for per-agent result directories.";
       };
 
       stateRoot = mkOption {
         type = types.nullOr types.str;
         default = config.services.patchbay.agentStateDir;
-        description = ''
-          Agent-owned root for per-agent worker state, including the private
-          0600 operations file the supervisor writes for each worker.
-        '';
+        description = "Root directory for per-agent worker state.";
       };
 
       workerCd = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Absolute working directory passed as --worker-cd.";
+        description = "Working directory passed to run-worker-supervisor as --worker-cd.";
       };
 
       extraArgs = mkOption {
@@ -350,7 +317,7 @@ in {
       environment = mkOption {
         type = types.attrsOf types.str;
         default = {};
-        description = "Additional non-secret environment variables for the worker supervisor service.";
+        description = "Additional environment variables for the worker supervisor service.";
       };
 
       environmentFiles = mkOption {

@@ -30,16 +30,16 @@ nix build .#default
 nix run .#default -- help
 ```
 
-The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`); it is passed to the manager as `PATCHBAY_WEB_PORT`. Put a reverse proxy in front of it if remote access is needed.
+The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`).
 
-The Console and Configuration routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`; the username is ignored. The module generates a root-owned, mode `0600` environment file at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`) containing the token. Only the manager service loads it, and workers do not inherit it. Read it as root when connecting:
+The Console and Configuration routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
 
 ```sh
 sudo cat /run/patchbay/ui-token.env
 curl -u patchbay:"$PATCHBAY_UI_TOKEN" http://127.0.0.1:4000/
 ```
 
-For remote browsers, use an SSH tunnel such as `ssh -L 4000:127.0.0.1:4000 host` rather than exposing the port. If a reverse proxy is used, terminate TLS there and add its own authentication in addition to the Basic token; forward to the loopback listener only. Do not put the token in query strings, URLs, or proxy logs. Static assets under `/assets` are public; every page and LiveView websocket requires authentication.
+For remote browsers, use an SSH tunnel such as `ssh -L 4000:127.0.0.1:4000 host` rather than exposing the port.
 
 ## Configuration
 
@@ -49,7 +49,7 @@ The manager reads agent definitions from `services.patchbay.configDir` (default 
 - `toolkits/*.toml` for fixed operations and native toolkit manifests
 - `shared/prompts/` and `scripts/` at the configuration root for assets shared by agents
 
-State, transcripts, runtime paths, and worker workspaces use the separate `services.patchbay.stateDir` and `agentStateDir`. The manager and worker supervisor run as different users.
+State, transcripts, runtime paths, and worker workspaces use the separate `services.patchbay.stateDir` and `agentStateDir`.
 
 Native filesystem toolkits execute in the manager process, not the isolated worker. An absolute `[toolkits.config] root` is trusted operator configuration and may point at an agent workspace or project directory, but it must not overlap `/proc` or the manager's state, runtime, or secret paths. Relative roots stay strictly below the config root, and every model-supplied path stays confined below the effective root.
 
@@ -58,9 +58,9 @@ Provider settings resolve from the manager environment:
 - `PATCHBAY_LLM_BASE_URL`, `PATCHBAY_LLM_API_KEY`, `PATCHBAY_LLM_MODEL`
 - `OPENAI_BASE_URL` / `OPENAI_API_BASE`, `OPENAI_API_KEY`, `OPENAI_MODEL` as fallbacks
 
-Non-secret values such as the base URL and model can use `services.patchbay.manager.environment`. Put `PATCHBAY_LLM_API_KEY` or `OPENAI_API_KEY` in a manager environment file configured with `services.patchbay.manager.environmentFiles`, not in the Nix store. Provider credentials stay in the manager; worker and tool process environments strip them.
+Non-secret values such as the base URL and model can use `services.patchbay.manager.environment`. Put `PATCHBAY_LLM_API_KEY` or `OPENAI_API_KEY` in a manager environment file configured with `services.patchbay.manager.environmentFiles`.
 
-The module generates `PATCHBAY_CONTROL_TOKEN` in a root-owned `0600` file at `services.patchbay.controlTokenFile` (default `/run/patchbay/control-token.env`), `PATCHBAY_UI_TOKEN` at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`), `SECRET_KEY_BASE` at `services.patchbay.secretKeyBaseFile` (default `<stateDir>/secret-key-base`), and the Phoenix session and LiveView signing salts at `services.patchbay.signingSaltsFile` (default `<stateDir>/web-signing-salts.env`). The control token is loaded by both services; the UI token, secret key base, and signing salts are loaded only by the manager. Back up or preserve these files if browser sessions must survive a state wipe.
+The module generates `PATCHBAY_CONTROL_TOKEN` at `services.patchbay.controlTokenFile` (default `/run/patchbay/control-token.env`), `PATCHBAY_UI_TOKEN` at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`), `SECRET_KEY_BASE` at `services.patchbay.secretKeyBaseFile` (default `<stateDir>/secret-key-base`), and the Phoenix session and LiveView signing salts at `services.patchbay.signingSaltsFile` (default `<stateDir>/web-signing-salts.env`). The control token is loaded by both services; the UI token, secret key base, and signing salts are loaded only by the manager. Back up or preserve these files if browser sessions must survive a state wipe.
 
 ## Development
 
