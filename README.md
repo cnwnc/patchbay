@@ -65,9 +65,22 @@ The workspace, result, state, runtime, transcript, and per-agent roots are separ
 
 The `/config` route has SOURCE and STRUCTURED tabs for the selected definition. Both save through the revision-checked `Patchbay.Config.Source.write/4`; a file changed after it was loaded produces a save conflict instead of an overwrite.
 
-The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, reasoning, lifecycle kind and scheduled fields, context recovery and compaction thresholds, budgets, toolkits with a filesystem root and fixed operations, and results with `required-by` dependencies. Toolkit names must resolve to a manifest. The filesystem toolkit requires a root that passes the native toolkit check. Result IDs, required-by references, and dependency cycles are validated before writing. Invalid or blank definitions use the source editor only.
+The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, and reasoning; lifecycle kind, schedule, overlap, and catch-up; `[[lifecycle.init]]` and `[[lifecycle.finalize]]` hooks; environment packages; context recovery and compaction thresholds; teardown workspace; budgets; toolkits and results. Invalid or blank definitions use the source editor only.
+
+Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
+
+Inline `[[toolkits.operations]]` are edited with executable, argv, and model-facing arguments. Argument rows carry the type (string, number, integer, boolean, enum, path, file, directory), an explicit required flag, and for `enum` the accepted values. Lifecycle hooks use the fixed-operation schema with its hook restrictions (absolute executable, no model-facing arguments); the placeholders use `/nix/store/.../bin/tool` to keep paths absolute and NixOS-neutral. Context recovery offers every accepted word grouped by what it does today: keep-side values (keep, carry, handoff, prompt, full, all, continue, resume, checkpoint, queryable) and reset-side values (reset, none, fresh, clear, drop, new). Several words currently map to the same keep or reset behavior and the option labels say so. Results are edited with form, required, `required-by`, and `extensions`; an `""` extensions line declares the empty-string extension that matches files without any extension. Result IDs, `required-by` references, dependency cycles, argument declarations, hook argv, and secret reference syntax are validated before writing.
 
 Structured saves apply edits to the parsed TOML document. Comments, key order, and keys the form does not cover are kept; fields changed through the form are written in normalized TOML. A blank model name is written as `"default"`. Unsaved source and structured changes survive reload broadcasts. Switching definitions asks before discarding, and RELOAD discards them.
+
+Kept intentionally source-only:
+
+- Top-level `[[operations]]`: it is accepted by `Definition.parse/2`, but definitions loaded from the config tree drop inline operations whose names are new to the resolved manifest, so fixed operations belong in a manifest. The editor edits `[[toolkits.operations]]` only.
+- The `[context]` compaction aliases (`compact-threshold`, `compact-at`, `compact-target`, `compact-to`): editing a compaction field writes `threshold` or `target`, leaving the aliases in place for other tooling.
+- `format-version`, and the lifecycle `one_shot` spelling, which is normalized to `one-shot` on edit.
+- Manifest files themselves (`<config_dir>/toolkits/*.toml`), scripts, and the agent directory layout.
+- Prompt and script files: the tab inventories their names, sources, and paths, and prompt texts are shown read-only. Edit prompt files on disk.
+- Provider selection: the `[model] provider` value is stored on the definition, while the manager's configured provider module decides the transport.
 
 ## Agent reference
 

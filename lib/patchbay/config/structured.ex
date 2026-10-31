@@ -5,23 +5,69 @@ defmodule Patchbay.Config.Structured do
   The structured editor loads an existing, valid `agent.toml` through
   `TomlElixir.Document`, so unchanged text, comments, key order, and tables the
   form does not cover survive a save. Only the fields represented by the form
-  are rewritten. Removed toolkit, operation, and result entries are deleted
-  from the document.
+  are rewritten. Removed toolkit, operation, hook, argument, and result
+  entries are deleted from the document.
+
+  The form covers the practical agent vocabulary: model name, provider, and
+  reasoning; lifecycle kind, schedule, overlap, catch-up, and init/finalize
+  hooks; environment packages; toolkits with native config (filesystem root,
+  memory namespace, secret-environment references) and inline fixed
+  operations whose model-facing arguments carry types, enum values, and
+  required flags; context recovery vocabulary and compaction thresholds;
+  teardown, budgets, and results with dependencies and extensions.
   """
 
+  alias Patchbay.ContextStore
   alias Patchbay.Definition
   alias Patchbay.Definition.Error
+  alias Patchbay.Secrets.Env
   alias Patchbay.Toolkit.Manifest
   alias Patchbay.Toolkit.Name
   alias Patchbay.Toolkit.Native.Filesystem
+  alias Patchbay.Toolkit.Registry
   alias TomlElixir.Document
 
   @lifecycle_kinds ["one-shot", "scheduled", "perpetual"]
   @result_forms ["prose", "number", "url", "file"]
   @overlaps ["forbid"]
   @catch_ups ["none", "once", "all"]
+  @workspace_actions ["retain", "export", "destroy"]
+  @hook_kinds ["init", "finalize"]
+  @operation_reserved_keys ["name", "executable", "argv", "arguments", "description"]
+  @argument_types ["string", "number", "integer", "boolean", "enum", "path", "file", "directory"]
+  @argument_name_regex ~r/\A[A-Za-z_][A-Za-z0-9_-]*\z/
+  @env_line_regex ~r/\A([A-Za-z_][A-Za-z0-9_]*)=(.*)\z/
+  @filesystem_toolkit "filesystem"
+  @memory_toolkit "personal-memory"
+  @secret_toolkit "secret-env"
 
   @type form :: %{String.t() => term()}
+  @type hook :: %{String.t() => term()}
+
+  @doc """
+  Context strings that restore prior context.
+
+  Every accepted `[context]` word is exposed even though several currently
+  share the `keep` behavior; `Patchbay.ContextStore` matches them.
+  """
+  @spec context_keep_values() :: [String.t()]
+  def context_keep_values, do: ContextStore.keep_values()
+
+  @doc "Context strings that start a run without prior context."
+  @spec context_reset_values() :: [String.t()]
+  def context_reset_values, do: ContextStore.reset_values()
+
+  @doc "Hook lists the lifecycle section edits: `init` and `finalize`."
+  @spec hook_kinds() :: [String.t()]
+  def hook_kinds, do: @hook_kinds
+
+  @doc "Accepted operation argument types."
+  @spec argument_types() :: [String.t()]
+  def argument_types, do: @argument_types
+
+  @doc "Accepted `[teardown] workspace` actions."
+  @spec workspace_actions() :: [String.t()]
+  def workspace_actions, do: @workspace_actions
 
   @spec load(String.t(), Path.t() | nil, String.t()) ::
           {:ok, %{document: Document.t(), form: form()}} | {:error, String.t()}
@@ -47,12 +93,67 @@ defmodule Patchbay.Config.Structured do
     |> Enum.sort()
   end
 
+  @doc """
+  The manifest a toolkit name resolves to, including the tool names its
+  native part would expose.
+
+  A manifest without `native` exposes no model-facing tools, so `tools` is
+  empty for it. An empty manifest `tools` list on a native manifest means
+  every tool the native toolkit registers; that expansion comes from the
+  registry. Returns `nil` when the name resolves to no manifest.
+  """
+  @spec manifest_info(String.t() | nil, Path.t() | nil) ::
+          %{
+            native: String.t() | nil,
+            tools: [String.t()],
+            operations: [String.t()],
+            description: String.t() | nil
+          }
+          | nil
+  def manifest_info(name, config_dir) when is_binary(name) and name != "" do
+    case safe_manifest(name, config_dir) do
+      {:ok, manifest} ->
+        tools =
+          cond do
+            is_nil(manifest.native) ->
+              []
+
+            manifest.tools == [] ->
+              manifest.native |> Registry.tools(%{}) |> Enum.map(&tool_name/1)
+
+            true ->
+              manifest.tools
+          end
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        %{
+          native: manifest.native,
+          tools: tools,
+          operations: Enum.map(manifest.operations, & &1.name),
+          description: manifest.description
+        }
+
+      _other ->
+        nil
+    end
+  end
+
+  def manifest_info(_name, _config_dir), do: nil
+
+  defp tool_name(%{name: name}), do: name
+
   @spec filesystem_toolkit?(String.t() | nil, Path.t() | nil) :: boolean()
-  def filesystem_toolkit?(name, config_dir), do: native_toolkit?(name, config_dir, "filesystem")
+  def filesystem_toolkit?(name, config_dir),
+    do: native_toolkit?(name, config_dir, @filesystem_toolkit)
 
   @spec personal_memory_toolkit?(String.t() | nil, Path.t() | nil) :: boolean()
   def personal_memory_toolkit?(name, config_dir),
-    do: native_toolkit?(name, config_dir, "personal-memory")
+    do: native_toolkit?(name, config_dir, @memory_toolkit)
+
+  @spec secret_env_toolkit?(String.t() | nil, Path.t() | nil) :: boolean()
+  def secret_env_toolkit?(name, config_dir),
+    do: native_toolkit?(name, config_dir, @secret_toolkit)
 
   defp native_toolkit?(name, config_dir, native) when is_binary(name) and name != "" do
     case safe_manifest(name, config_dir) do
@@ -72,6 +173,8 @@ defmodule Patchbay.Config.Structured do
       "model" => section(params, current, "model", &model_from_params/2),
       "lifecycle" => section(params, current, "lifecycle", &lifecycle_from_params/2),
       "context" => section(params, current, "context", &context_from_params/2),
+      "environment" => section(params, current, "environment", &environment_from_params/2),
+      "teardown" => section(params, current, "teardown", &teardown_from_params/2),
       "budgets" => section(params, current, "budgets", &budgets_from_params/2),
       "toolkits" => toolkits_from_params(params["toolkits"], current["toolkits"], current),
       "results" => results_from_params(params["results"], current["results"], current)
@@ -80,9 +183,19 @@ defmodule Patchbay.Config.Structured do
 
   def form_from_params(_params, current), do: current || empty_form()
 
-  @spec add_toolkit(form()) :: form()
-  def add_toolkit(form) do
-    Map.update!(form, "toolkits", &(&1 ++ [empty_toolkit()]))
+  @doc """
+  Appends a toolkit entry, optionally prefilled with a manifest name.
+
+  A blank name appends a blank row, so custom manifests can still be typed
+  by hand.
+  """
+  @spec add_toolkit(form(), String.t() | nil) :: form()
+  def add_toolkit(form, name \\ "") do
+    toolkit =
+      empty_toolkit()
+      |> Map.put("toolkit", if(is_binary(name), do: String.trim(name), else: ""))
+
+    Map.update!(form, "toolkits", &(&1 ++ [toolkit]))
   end
 
   @spec remove_toolkit(form(), non_neg_integer()) :: form()
@@ -102,6 +215,47 @@ defmodule Patchbay.Config.Structured do
     update_in(form, ["toolkits", Access.at(toolkit_index), "operations"], fn operations ->
       List.delete_at(operations || [], operation_index)
     end)
+  end
+
+  @spec add_argument(form(), non_neg_integer(), non_neg_integer()) :: form()
+  def add_argument(form, toolkit_index, operation_index) do
+    update_in(
+      form,
+      [
+        "toolkits",
+        Access.at(toolkit_index),
+        "operations",
+        Access.at(operation_index),
+        "arguments"
+      ],
+      fn arguments -> (arguments || []) ++ [empty_argument()] end
+    )
+  end
+
+  @spec remove_argument(form(), non_neg_integer(), non_neg_integer(), non_neg_integer()) :: form()
+  def remove_argument(form, toolkit_index, operation_index, argument_index) do
+    update_in(
+      form,
+      [
+        "toolkits",
+        Access.at(toolkit_index),
+        "operations",
+        Access.at(operation_index),
+        "arguments"
+      ],
+      fn arguments -> List.delete_at(arguments || [], argument_index) end
+    )
+  end
+
+  @doc "Appends a lifecycle hook; `kind` must be `\"init\"` or `\"finalize\"`."
+  @spec add_hook(form(), String.t()) :: form()
+  def add_hook(form, kind) when kind in @hook_kinds do
+    update_in(form, ["lifecycle", kind], fn hooks -> (hooks || []) ++ [empty_hook()] end)
+  end
+
+  @spec remove_hook(form(), String.t(), non_neg_integer()) :: form()
+  def remove_hook(form, kind, index) when kind in @hook_kinds do
+    update_in(form, ["lifecycle", kind], &List.delete_at(&1 || [], index))
   end
 
   @spec add_result(form()) :: form()
@@ -157,6 +311,8 @@ defmodule Patchbay.Config.Structured do
              ["threshold", "Threshold"],
              ["target", "Target"]
            ]),
+         :ok <- validate_environment(form["environment"]),
+         :ok <- validate_teardown(form["teardown"]),
          :ok <-
            validate_numbers(form["budgets"], "Budget", [
              ["run_seconds", "Run seconds"],
@@ -180,6 +336,8 @@ defmodule Patchbay.Config.Structured do
     lifecycle = table(data["lifecycle"])
     context = table(data["context"])
     budgets = table(data["budgets"])
+    environment = table(data["environment"])
+    teardown = table(data["teardown"])
 
     %{
       "id" => string(data["id"]),
@@ -195,7 +353,9 @@ defmodule Patchbay.Config.Structured do
         "catch_up" => string(lifecycle["catch-up"]),
         "schedule_draft" => "",
         "overlap_draft" => "",
-        "catch_up_draft" => ""
+        "catch_up_draft" => "",
+        "init" => hooks_from_data(lifecycle["init"]),
+        "finalize" => hooks_from_data(lifecycle["finalize"])
       },
       "context" => %{
         "between_runs" => string(context["between-runs"]),
@@ -204,6 +364,8 @@ defmodule Patchbay.Config.Structured do
         "threshold" => integer_string(context["threshold"]),
         "target" => integer_string(context["target"])
       },
+      "environment" => %{"packages" => list_text(environment["packages"])},
+      "teardown" => %{"workspace" => string(teardown["workspace"])},
       "budgets" => %{
         "run_seconds" => integer_string(budgets["run-seconds"]),
         "tokens" => integer_string(budgets["tokens"])
@@ -226,7 +388,9 @@ defmodule Patchbay.Config.Structured do
         "catch_up" => "",
         "schedule_draft" => "",
         "overlap_draft" => "",
-        "catch_up_draft" => ""
+        "catch_up_draft" => "",
+        "init" => [],
+        "finalize" => []
       },
       "context" => %{
         "between_runs" => "",
@@ -235,6 +399,8 @@ defmodule Patchbay.Config.Structured do
         "threshold" => "",
         "target" => ""
       },
+      "environment" => %{"packages" => ""},
+      "teardown" => %{"workspace" => ""},
       "budgets" => %{"run_seconds" => "", "tokens" => ""},
       "toolkits" => [],
       "results" => []
@@ -257,27 +423,38 @@ defmodule Patchbay.Config.Structured do
     overlap = text_value(params, current, "overlap")
     catch_up = text_value(params, current, "catch_up")
 
-    if kind == "scheduled" do
-      %{
-        "kind" => kind,
-        "schedule" => schedule_or_draft(schedule, current, "schedule", params),
-        "overlap" => schedule_or_draft(overlap, current, "overlap", params),
-        "catch_up" => schedule_or_draft(catch_up, current, "catch_up", params),
-        "schedule_draft" => "",
-        "overlap_draft" => "",
-        "catch_up_draft" => ""
-      }
-    else
-      %{
-        "kind" => kind,
-        "schedule" => "",
-        "overlap" => "",
-        "catch_up" => "",
-        "schedule_draft" => retained_draft(schedule, current, "schedule", params),
-        "overlap_draft" => retained_draft(overlap, current, "overlap", params),
-        "catch_up_draft" => retained_draft(catch_up, current, "catch_up", params)
-      }
-    end
+    {schedule, overlap, catch_up, schedule_draft, overlap_draft, catch_up_draft} =
+      if kind == "scheduled" do
+        {
+          schedule_or_draft(schedule, current, "schedule", params),
+          schedule_or_draft(overlap, current, "overlap", params),
+          schedule_or_draft(catch_up, current, "catch_up", params),
+          "",
+          "",
+          ""
+        }
+      else
+        {
+          "",
+          "",
+          "",
+          retained_draft(schedule, current, "schedule", params),
+          retained_draft(overlap, current, "overlap", params),
+          retained_draft(catch_up, current, "catch_up", params)
+        }
+      end
+
+    %{
+      "kind" => kind,
+      "schedule" => schedule,
+      "overlap" => overlap,
+      "catch_up" => catch_up,
+      "schedule_draft" => schedule_draft,
+      "overlap_draft" => overlap_draft,
+      "catch_up_draft" => catch_up_draft,
+      "init" => hooks_from_params(params["init"], current["init"]),
+      "finalize" => hooks_from_params(params["finalize"], current["finalize"])
+    }
   end
 
   defp schedule_or_draft(value, current, key, params) do
@@ -307,6 +484,14 @@ defmodule Patchbay.Config.Structured do
     }
   end
 
+  defp environment_from_params(params, current) do
+    %{"packages" => text_value(params, current, "packages")}
+  end
+
+  defp teardown_from_params(params, current) do
+    %{"workspace" => text_value(params, current, "workspace")}
+  end
+
   defp budgets_from_params(params, current) do
     %{
       "run_seconds" => text_value(params, current, "run_seconds"),
@@ -322,14 +507,14 @@ defmodule Patchbay.Config.Structured do
     |> Enum.map(fn {toolkit, index} ->
       toolkit = table(toolkit)
       config = table(toolkit["config"])
-      name = string(toolkit["toolkit"])
 
       %{
         "_key" => Integer.to_string(index),
-        "toolkit" => name,
+        "toolkit" => string(toolkit["toolkit"]),
         "description" => string(toolkit["description"]),
         "root" => string(config["root"]),
         "namespace" => string(config["namespace"]),
+        "env" => env_text(config["env"]),
         "operations" => operations_from_data(toolkit["operations"])
       }
     end)
@@ -350,12 +535,88 @@ defmodule Patchbay.Config.Structured do
         "name" => string(operation["name"]),
         "description" => string(operation["description"]),
         "executable" => string(operation["executable"]),
-        "argv" => (operation["argv"] || []) |> Enum.map(&string/1) |> Enum.join("\n")
+        "argv" => list_text(operation["argv"]),
+        "arguments" => arguments_from_data(operation)
       }
     end)
   end
 
   defp operations_from_data(_operations), do: []
+
+  defp hooks_from_data(nil), do: []
+
+  defp hooks_from_data(hooks) when is_list(hooks) do
+    hooks
+    |> Enum.with_index()
+    |> Enum.map(fn {hook, index} ->
+      hook = table(hook)
+
+      %{
+        "_key" => Integer.to_string(index),
+        "name" => string(hook["name"]),
+        "description" => string(hook["description"]),
+        "executable" => string(hook["executable"]),
+        "argv" => list_text(hook["argv"])
+      }
+    end)
+  end
+
+  defp hooks_from_data(_hooks), do: []
+
+  # Argument declarations can reach the form through an `arguments` table, an
+  # `arguments` array of tables, or child tables under the operation itself.
+  defp arguments_from_data(operation) when is_map(operation) do
+    declared =
+      case Map.get(operation, "arguments") do
+        declaration when is_map(declaration) or is_list(declaration) ->
+          argument_entries(declaration)
+
+        _other ->
+          []
+      end
+
+    slots =
+      for {name, attr} <- operation,
+          is_binary(name) and is_map(attr) and name not in @operation_reserved_keys,
+          do: {name, attr}
+
+    (declared ++ slots)
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.with_index()
+    |> Enum.map(fn {{name, declaration}, index} ->
+      %{
+        "_key" => Integer.to_string(index),
+        "name" => string(name),
+        "type" => string(declaration["type"]),
+        "values" => list_text(declaration["values"]),
+        "required" => required_string(declaration["required"])
+      }
+    end)
+  end
+
+  defp arguments_from_data(_operation), do: []
+
+  @doc false
+  def argument_entries(declaration) when is_map(declaration) do
+    Enum.map(declaration, fn {name, value} -> {string(name), table(value)} end)
+  end
+
+  def argument_entries(entries) when is_list(entries) do
+    Enum.map(entries, fn entry ->
+      entry = table(entry)
+      {string(entry["name"]), entry}
+    end)
+  end
+
+  defp required_string(value) do
+    case value do
+      true -> "true"
+      false -> "false"
+      "true" -> "true"
+      "false" -> "false"
+      _other -> ""
+    end
+  end
 
   defp results_from_data(nil), do: []
 
@@ -377,7 +638,7 @@ defmodule Patchbay.Config.Structured do
             else: "true"
           ),
         "required_by" => required_by,
-        "extensions" => (result["extensions"] || []) |> Enum.map(&string/1) |> Enum.join("\n")
+        "extensions" => extension_text(result["extensions"])
       }
     end)
   end
@@ -404,6 +665,7 @@ defmodule Patchbay.Config.Structured do
         "description" => text_value(raw, current_toolkit, "description"),
         "root" => text_value(raw, current_toolkit, "root"),
         "namespace" => text_value(raw, current_toolkit, "namespace"),
+        "env" => text_value(raw, current_toolkit, "env"),
         "operations" =>
           operations_from_params(
             raw["operations"],
@@ -435,12 +697,69 @@ defmodule Patchbay.Config.Structured do
         "name" => text_value(raw, current_operation, "name"),
         "description" => text_value(raw, current_operation, "description"),
         "executable" => text_value(raw, current_operation, "executable"),
-        "argv" => text_value(raw, current_operation, "argv")
+        "argv" => text_value(raw, current_operation, "argv"),
+        "arguments" =>
+          arguments_from_params(
+            raw["arguments"],
+            current_operation["arguments"],
+            current_operation
+          )
       }
     end)
   end
 
   defp operations_from_params(_params, current, _all), do: current || []
+
+  defp arguments_from_params(nil, current, _all), do: current || []
+
+  defp arguments_from_params(params, current, all) when is_map(params),
+    do: arguments_from_params(map_values(params), current, all)
+
+  defp arguments_from_params(params, current, _all) when is_list(params) do
+    current = current || []
+
+    params
+    |> Enum.with_index()
+    |> Enum.map(fn {raw, index} ->
+      raw = table(raw)
+      current_argument = current_item(raw, current, index, empty_argument())
+
+      %{
+        "name" => text_value(raw, current_argument, "name"),
+        "type" => text_value(raw, current_argument, "type"),
+        "values" => text_value(raw, current_argument, "values"),
+        "required" => text_value(raw, current_argument, "required")
+      }
+    end)
+  end
+
+  defp arguments_from_params(_params, current, _all), do: current || []
+
+  defp hooks_from_params(nil, current), do: current || []
+
+  defp hooks_from_params(params, current) when is_map(params),
+    do: hooks_from_params(map_values(params), current)
+
+  defp hooks_from_params(params, current) when is_list(params) do
+    current = current || []
+
+    params
+    |> Enum.with_index()
+    |> Enum.map(fn {raw, index} ->
+      raw = table(raw)
+      current_hook = current_item(raw, current, index, empty_hook())
+
+      %{
+        "_key" => item_key(raw, current_hook),
+        "name" => text_value(raw, current_hook, "name"),
+        "description" => text_value(raw, current_hook, "description"),
+        "executable" => text_value(raw, current_hook, "executable"),
+        "argv" => text_value(raw, current_hook, "argv")
+      }
+    end)
+  end
+
+  defp hooks_from_params(_params, current), do: current || []
 
   defp results_from_params(nil, current, _all), do: current || []
 
@@ -479,11 +798,32 @@ defmodule Patchbay.Config.Structured do
       "description" => "",
       "root" => "",
       "namespace" => "",
+      "env" => "",
       "operations" => []
     }
   end
 
   defp empty_operation do
+    %{
+      "_key" => new_key(),
+      "name" => "",
+      "description" => "",
+      "executable" => "",
+      "argv" => "",
+      "arguments" => []
+    }
+  end
+
+  defp empty_argument do
+    %{
+      "name" => "",
+      "type" => "string",
+      "values" => "",
+      "required" => ""
+    }
+  end
+
+  defp empty_hook do
     %{
       "_key" => new_key(),
       "name" => "",
@@ -563,7 +903,7 @@ defmodule Patchbay.Config.Structured do
   end
 
   defp section(params, current, key, fun) do
-    fun.(table(params[key]), table(current[key]) || %{})
+    fun.(table(params[key]), table(current[key]))
   end
 
   defp text(params, current, key) do
@@ -629,7 +969,10 @@ defmodule Patchbay.Config.Structured do
         {:error, "Schedule, overlap, and catch-up are only valid for a scheduled lifecycle."}
 
       true ->
-        :ok
+        with :ok <- validate_hooks(lifecycle["init"] || [], "lifecycle init hook"),
+             :ok <- validate_hooks(lifecycle["finalize"] || [], "lifecycle finalize hook") do
+          :ok
+        end
     end
   end
 
@@ -639,6 +982,65 @@ defmodule Patchbay.Config.Structured do
   end
 
   defp invalid_optional?(_value, _allowed), do: false
+
+  defp validate_hooks(hooks, label) do
+    hooks
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {hook, index}, :ok ->
+      case validate_hook(hook, "#{label} #{index + 1}") do
+        :ok -> {:cont, :ok}
+        {:error, _message} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_hook(hook, label) do
+    name = String.trim(string(hook["name"]))
+    executable = String.trim(string(hook["executable"]))
+    argv = argv_lines(hook["argv"])
+
+    cond do
+      name == "" ->
+        {:error, "#{label} requires a name."}
+
+      not Name.valid?(name) ->
+        {:error, "#{label} name must use letters, digits, underscores, or hyphens."}
+
+      executable != "" and Path.type(executable) != :absolute ->
+        {:error, "#{label} executable must be an absolute path."}
+
+      executable == "" and argv == [] ->
+        {:error, "#{label} requires argv when no executable is set."}
+
+      executable == "" and Path.type(List.first(argv)) != :absolute ->
+        {:error, "#{label} argv must start with an absolute path to the executable."}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_environment(environment) do
+    packages = value_lines(environment["packages"])
+
+    case packages -- Enum.uniq(packages) do
+      [] ->
+        :ok
+
+      [duplicate | _rest] ->
+        {:error, "Environment package #{inspect(duplicate)} is declared more than once."}
+    end
+  end
+
+  defp validate_teardown(teardown) do
+    value = String.trim(string(teardown["workspace"]))
+
+    if value == "" or value in @workspace_actions do
+      :ok
+    else
+      {:error, "Teardown workspace must be retain, export, or destroy when set."}
+    end
+  end
 
   defp validate_numbers(section, label, fields) do
     Enum.reduce_while(fields, :ok, fn [key, name], :ok ->
@@ -661,6 +1063,12 @@ defmodule Patchbay.Config.Structured do
   end
 
   defp validate_toolkit(toolkit, index, config_dir) do
+    toolkit
+    |> validate_manifest(index, config_dir)
+    |> validate_toolkit_env(toolkit, index, config_dir)
+  end
+
+  defp validate_manifest(toolkit, index, config_dir) do
     label = "Toolkit #{index + 1}"
     name = String.trim(string(toolkit["toolkit"]))
 
@@ -699,6 +1107,69 @@ defmodule Patchbay.Config.Structured do
     end
   end
 
+  defp validate_toolkit_env(:ok, toolkit, index, _config_dir) do
+    case value_lines(toolkit["env"]) do
+      [] -> :ok
+      entries -> validate_env_entries(entries, "Toolkit #{index + 1}")
+    end
+  end
+
+  defp validate_toolkit_env({:error, _message} = error, _toolkit, _index, _config_dir), do: error
+
+  defp validate_env_entries(entries, label) do
+    declarations = Enum.map(entries, &parse_env_line/1)
+
+    with :ok <- check_env_line_errors(declarations, label),
+         :ok <- check_env_duplicates(declarations, label),
+         {:ok, _checks} <- env_checks(declarations) do
+      :ok
+    else
+      {:error, reason} -> {:error, "#{label} #{reason}"}
+    end
+  end
+
+  defp parse_env_line(entry) do
+    case Regex.run(@env_line_regex, String.trim(entry)) do
+      [_, variable, reference] -> {String.trim(variable), String.trim(reference)}
+      nil -> :invalid
+    end
+  end
+
+  defp check_env_line_errors(declarations, _label) do
+    if :invalid in declarations do
+      {:error, "secret references must use NAME=secret://<name> lines."}
+    else
+      :ok
+    end
+  end
+
+  defp check_env_duplicates(declarations, _label) do
+    variables = Enum.map(declarations, &elem(&1, 0))
+
+    case variables -- Enum.uniq(variables) do
+      [] -> :ok
+      [duplicate | _rest] -> {:error, "declares env #{inspect(duplicate)} more than once."}
+    end
+  end
+
+  # `Patchbay.Secrets.Env` validates variable names and secret reference
+  # shape without ever echoing the declared reference.
+  defp env_checks(declarations) do
+    case Env.validate_config(%{"env" => Map.new(declarations)}) do
+      :ok -> {:ok, declarations}
+      {:error, path, message} -> {:error, env_path_message(path, message)}
+    end
+  catch
+    kind, reason -> {:error, "secret references are invalid: #{inspect({kind, reason})}"}
+  end
+
+  defp env_path_message(path, message) do
+    case path |> List.last() |> string() do
+      "" -> "env #{message}"
+      variable -> "env #{inspect(variable)} #{message}"
+    end
+  end
+
   defp validate_operations(operations, label) do
     operations
     |> Enum.with_index()
@@ -733,7 +1204,64 @@ defmodule Patchbay.Config.Structured do
         {:error, "#{label} requires argv when no executable is set."}
 
       true ->
+        validate_arguments(operation["arguments"] || [], label)
+    end
+  end
+
+  defp validate_arguments(arguments, label) do
+    arguments
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {argument, index}, :ok ->
+      case validate_argument(argument, "#{label} argument #{index + 1}") do
+        :ok -> {:cont, :ok}
+        {:error, _message} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      :ok -> duplicate_argument_names(arguments, label)
+      error -> error
+    end
+  end
+
+  defp validate_argument(argument, label) do
+    name = String.trim(string(argument["name"]))
+    type = String.trim(string(argument["type"]))
+    values = value_lines(argument["values"])
+    required = String.trim(string(argument["required"]))
+
+    cond do
+      name == "" ->
+        {:error, "#{label} requires a name."}
+
+      not Regex.match?(@argument_name_regex, name) ->
+        {:error, "#{label} name must start with a letter or underscore."}
+
+      type not in @argument_types ->
+        {:error, "#{label} type must be one of #{Enum.join(Enum.sort(@argument_types), ", ")}."}
+
+      type == "enum" and values == [] ->
+        {:error, "#{label} requires at least one enum value."}
+
+      type != "enum" and values != [] ->
+        {:error, "#{label} values are only valid for an enum argument."}
+
+      required not in ["", "true", "false"] ->
+        {:error, "#{label} required must be true or false when set."}
+
+      true ->
         :ok
+    end
+  end
+
+  defp duplicate_argument_names(arguments, label) do
+    names = Enum.map(arguments, &String.trim(string(&1["name"])))
+
+    case names -- Enum.uniq(names) do
+      [] ->
+        :ok
+
+      [duplicate | _rest] ->
+        {:error, "#{label} declares argument #{inspect(duplicate)} more than once."}
     end
   end
 
@@ -873,7 +1401,10 @@ defmodule Patchbay.Config.Structured do
   defp apply_form(document, form, config_dir) do
     with {:ok, document} <- apply_model(document, form["model"]),
          {:ok, document} <- apply_lifecycle(document, form["lifecycle"]),
+         {:ok, document} <- apply_hooks(document, form["lifecycle"]),
          {:ok, document} <- apply_context(document, form["context"]),
+         {:ok, document} <- apply_environment(document, form["environment"]),
+         {:ok, document} <- apply_teardown(document, form["teardown"]),
          {:ok, document} <- apply_budgets(document, form["budgets"]),
          {:ok, document} <- apply_toolkits(document, form["toolkits"] || [], config_dir),
          {:ok, document} <- apply_results(document, form["results"] || []) do
@@ -926,6 +1457,44 @@ defmodule Patchbay.Config.Structured do
     end
   end
 
+  # Hooks live in `[[lifecycle.init]]` and `[[lifecycle.finalize]]. Each list
+  # is edited with the same stable-index deletion the toolkit lists use.
+  defp apply_hooks(document, lifecycle) do
+    Enum.reduce_while(@hook_kinds, {:ok, document}, fn kind, {:ok, document} ->
+      case apply_hook_list(document, lifecycle, kind) do
+        {:ok, document} -> {:cont, {:ok, document}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp apply_hook_list(document, lifecycle, kind) do
+    hooks = lifecycle[kind] || []
+    existing = map_list(Document.get(document, ["lifecycle", kind], []))
+    retained = retained_indexes(hooks, length(existing))
+
+    with {:ok, document} <-
+           delete_missing(document, ["lifecycle", kind], length(existing), retained) do
+      desired =
+        hooks
+        |> Enum.with_index()
+        |> Enum.map(fn {hook, index} ->
+          build_hook(existing_item(hook, existing, index), hook)
+        end)
+
+      put_list(document, ["lifecycle", kind], desired)
+    end
+  end
+
+  defp build_hook(existing, hook) do
+    existing
+    |> table()
+    |> Map.put("name", String.trim(string(hook["name"])))
+    |> put_key("description", hook["description"])
+    |> put_key("executable", hook["executable"])
+    |> Map.put("argv", argv_lines(hook["argv"]))
+  end
+
   defp apply_context(document, context) do
     with {:ok, document} <-
            put_string(document, ["context", "between-runs"], context["between_runs"]),
@@ -941,6 +1510,14 @@ defmodule Patchbay.Config.Structured do
          {:ok, document} <- put_integer(document, ["context", "target"], context["target"]) do
       {:ok, document}
     end
+  end
+
+  defp apply_environment(document, environment) do
+    put_list(document, ["environment", "packages"], value_lines(environment["packages"]))
+  end
+
+  defp apply_teardown(document, teardown) do
+    put_string(document, ["teardown", "workspace"], teardown["workspace"])
   end
 
   defp apply_budgets(document, budgets) do
@@ -992,8 +1569,17 @@ defmodule Patchbay.Config.Structured do
     existing = Map.put(existing, "toolkit", name)
     existing = put_key(existing, "description", toolkit["description"])
 
-    config = table(existing["config"])
+    config =
+      existing
+      |> table_in("config")
+      |> toolkit_config(toolkit, name, config_dir)
 
+    existing = put_map(existing, "config", config)
+    operations = build_operations(existing["operations"], toolkit["operations"] || [])
+    put_map(existing, "operations", operations)
+  end
+
+  defp toolkit_config(config, toolkit, name, config_dir) do
     config =
       cond do
         filesystem_toolkit?(name, config_dir) ->
@@ -1006,9 +1592,23 @@ defmodule Patchbay.Config.Structured do
           config
       end
 
-    existing = put_map(existing, "config", config)
-    operations = build_operations(existing["operations"], toolkit["operations"] || [])
-    put_map(existing, "operations", operations)
+    if secret_env_toolkit?(name, config_dir) or is_map(config["env"]) do
+      put_map(config, "env", env_map(toolkit["env"]))
+    else
+      config
+    end
+  end
+
+  defp env_map(value) do
+    value
+    |> value_lines()
+    |> Enum.map(fn line ->
+      case Regex.run(@env_line_regex, String.trim(line)) do
+        [_, variable, reference] -> {String.trim(variable), String.trim(reference)}
+        nil -> {String.trim(line), ""}
+      end
+    end)
+    |> Map.new()
   end
 
   defp build_operations(existing_operations, operations) do
@@ -1018,14 +1618,94 @@ defmodule Patchbay.Config.Structured do
     |> Enum.with_index()
     |> Enum.map(fn {operation, index} ->
       existing = table(existing_item(operation, existing_operations, index))
-      argv = argv_lines(operation["argv"])
 
       existing
       |> Map.put("name", String.trim(string(operation["name"])))
       |> put_key("description", operation["description"])
       |> put_key("executable", operation["executable"])
-      |> Map.put("argv", argv)
+      |> Map.put("argv", argv_lines(operation["argv"]))
+      |> put_arguments(operation["arguments"] || [])
     end)
+  end
+
+  # Model-facing arguments are rewritten under one `arguments` table. Any
+  # child-table declarations from the source are folded into it, because a
+  # document must not carry both forms at once.
+  defp put_arguments(existing, desired) do
+    by_name = existing |> existing_arguments() |> Map.new()
+    existing = strip_argument_tables(existing)
+    declared = declared_arguments(desired, by_name)
+
+    if declared == %{},
+      do: Map.delete(existing, "arguments"),
+      else: Map.merge(existing, declared)
+  end
+
+  defp declared_arguments(operations, by_name) do
+    arguments =
+      operations
+      |> Enum.map(fn argument ->
+        name = String.trim(string(argument["name"]))
+        {name, build_argument(Map.get(by_name, name, %{}), argument)}
+      end)
+      |> Map.new()
+
+    if arguments == %{}, do: %{}, else: %{"arguments" => arguments}
+  end
+
+  defp build_argument(declaration, form_argument) do
+    type = String.trim(string(form_argument["type"]))
+
+    declaration
+    |> Map.put("type", type)
+    |> Map.drop(["values"])
+    |> for_enum_values(type, form_argument)
+    |> hold_required(form_argument)
+  end
+
+  defp for_enum_values(declaration, "enum", form_argument) do
+    Map.put(declaration, "values", value_lines(form_argument["values"]))
+  end
+
+  defp for_enum_values(declaration, _type, _form_argument), do: declaration
+
+  defp hold_required(declaration, form_argument) do
+    case form_argument["required"] do
+      "true" -> Map.put(declaration, "required", true)
+      "false" -> Map.put(declaration, "required", false)
+      _other -> Map.delete(declaration, "required")
+    end
+  end
+
+  defp existing_arguments(existing) do
+    from_arguments =
+      case Map.get(existing, "arguments") do
+        declaration when is_map(declaration) or is_list(declaration) ->
+          argument_entries(declaration)
+
+        _other ->
+          []
+      end
+
+    slots =
+      for {name, attr} <- existing,
+          is_binary(name) and is_map(attr) and name not in @operation_reserved_keys,
+          do: {name, attr}
+
+    from_arguments ++ slots
+  end
+
+  defp strip_argument_tables(existing) do
+    existing
+    |> Enum.reject(fn
+      {name, value}
+      when is_binary(name) and is_map(value) and name not in @operation_reserved_keys ->
+        true
+
+      {_name, _value} ->
+        false
+    end)
+    |> Map.new()
   end
 
   defp apply_results(document, results) do
@@ -1171,13 +1851,59 @@ defmodule Patchbay.Config.Structured do
     |> Enum.reject(&(&1 == ""))
   end
 
+  # A `""` line declares the empty-string extension, which matches files
+  # without any extension. Blank lines are ignored.
   defp extension_lines(value) do
     value
     |> string()
     |> String.split("\n")
     |> Enum.map(&String.trim(&1))
     |> Enum.reject(&(&1 == ""))
+    |> Enum.map(fn
+      "\"\"" -> ""
+      extension -> extension
+    end)
   end
+
+  defp extension_text(nil), do: ""
+
+  defp extension_text(extensions) when is_list(extensions) do
+    extensions
+    |> Enum.map(fn
+      "" -> "\"\""
+      extension -> string(extension)
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp extension_text(_extensions), do: ""
+
+  defp value_lines(value) do
+    value
+    |> string()
+    |> String.split("\n")
+    |> Enum.map(&String.trim(&1))
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp list_text(nil), do: ""
+
+  defp list_text(list) when is_list(list) do
+    list |> Enum.map(&string/1) |> Enum.join("\n")
+  end
+
+  defp list_text(_list), do: ""
+
+  defp env_text(nil), do: ""
+
+  defp env_text(env) when is_map(env) do
+    env
+    |> Enum.map(fn {variable, reference} -> "#{string(variable)}=#{string(reference)}" end)
+    |> Enum.sort()
+    |> Enum.join("\n")
+  end
+
+  defp env_text(_env), do: ""
 
   defp non_negative_integer(nil), do: {:ok, nil}
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: {:ok, value}
@@ -1211,4 +1937,11 @@ defmodule Patchbay.Config.Structured do
   defp string(value) when is_integer(value), do: Integer.to_string(value)
   defp string(value) when is_atom(value), do: Atom.to_string(value)
   defp string(value), do: to_string(value)
+
+  defp table_in(map, key) do
+    case Map.get(map, key) do
+      value when is_map(value) -> value
+      _other -> %{}
+    end
+  end
 end

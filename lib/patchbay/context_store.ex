@@ -42,6 +42,14 @@ defmodule Patchbay.ContextStore do
            }}
           | {:run, %{run_id: binary() | nil, status: String.t(), at: binary() | nil}}
 
+  @doc "Returns the context-recovery strings that restore prior context."
+  @spec keep_values() :: [String.t()]
+  def keep_values, do: @keep_values
+
+  @doc "Returns the context-recovery strings that start with no prior context."
+  @spec reset_values() :: [String.t()]
+  def reset_values, do: @reset_values
+
   @doc "Returns the directory that holds context files for `state_dir`."
   @spec dir(Path.t()) :: Path.t()
   def dir(state_dir) when is_binary(state_dir), do: Path.join(state_dir, "context")

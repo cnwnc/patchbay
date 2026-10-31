@@ -66,6 +66,7 @@ defmodule PatchbayWeb.ConfigurationLive do
        structured_dirty?: false,
        structured_note: nil,
        structured_toolkit_names: [],
+       new_toolkit_name: "",
        pending_select: nil,
        config_dir: nil,
        resolved: "",
@@ -189,10 +190,14 @@ defmodule PatchbayWeb.ConfigurationLive do
     {:noreply, socket}
   end
 
-  def handle_event("edit_structured", %{"structured" => params}, socket) do
+  def handle_event("edit_structured", params, socket) do
     socket =
       if socket.assigns.structured do
-        update_structured(socket, Structured.form_from_params(params, socket.assigns.structured))
+        socket
+        |> assign(:new_toolkit_name, picked_toolkit(params))
+        |> update_structured(
+          Structured.form_from_params(structured_params(params), socket.assigns.structured)
+        )
       else
         socket
       end
@@ -200,14 +205,76 @@ defmodule PatchbayWeb.ConfigurationLive do
     {:noreply, socket}
   end
 
-  def handle_event("edit_structured", _params, socket), do: {:noreply, socket}
-
   def handle_event("add_toolkit", _params, socket) do
     socket =
       if socket.assigns.structured do
-        update_structured(socket, Structured.add_toolkit(socket.assigns.structured))
+        update_structured(
+          socket,
+          Structured.add_toolkit(socket.assigns.structured, socket.assigns.new_toolkit_name)
+        )
       else
         socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("select_new_toolkit", _params, socket), do: {:noreply, socket}
+
+  def handle_event("add_argument", %{"toolkit" => toolkit, "operation" => operation}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, toolkit} <- parse_index(toolkit),
+           {:ok, operation} <- parse_index(operation) do
+        update_structured(socket, Structured.add_argument(structured, toolkit, operation))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event(
+        "remove_argument",
+        %{"toolkit" => toolkit, "operation" => operation, "index" => index},
+        socket
+      ) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, toolkit} <- parse_index(toolkit),
+           {:ok, operation} <- parse_index(operation),
+           {:ok, index} <- parse_index(index) do
+        update_structured(
+          socket,
+          Structured.remove_argument(structured, toolkit, operation, index)
+        )
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("add_hook", %{"hook" => hook}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           true <- hook in Structured.hook_kinds() do
+        update_structured(socket, Structured.add_hook(structured, hook))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_hook", %{"hook" => hook, "index" => index}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           true <- hook in Structured.hook_kinds(),
+           {:ok, index} <- parse_index(index) do
+        update_structured(socket, Structured.remove_hook(structured, hook, index))
+      else
+        _other -> socket
       end
 
     {:noreply, socket}
@@ -420,7 +487,8 @@ defmodule PatchbayWeb.ConfigurationLive do
           source_baseline: source_info.editable,
           source_dirty?: false,
           editor_tab: "source",
-          structured_toolkit_names: Structured.toolkit_names(config_dir)
+          structured_toolkit_names: Structured.toolkit_names(config_dir),
+          new_toolkit_name: ""
         },
         structured_assigns(source_info, snapshot, config_dir, selected)
       )
@@ -833,6 +901,21 @@ defmodule PatchbayWeb.ConfigurationLive do
     )
   end
 
+  # The manifest picker rides along with the structured form's change events,
+  # so picking a manifest and adding it needs no separate submit.
+  defp structured_params(params) when is_map(params) do
+    case params["structured"] do
+      structured when is_map(structured) -> structured
+      _other -> %{}
+    end
+  end
+
+  defp picked_toolkit(params) when is_map(params), do: string_param(params["new_toolkit"])
+  defp picked_toolkit(_params), do: ""
+
+  defp string_param(value) when is_binary(value), do: String.trim(value)
+  defp string_param(_value), do: ""
+
   defp parse_index(index) when is_integer(index) and index >= 0, do: {:ok, index}
 
   defp parse_index(index) when is_binary(index) do
@@ -1012,6 +1095,157 @@ defmodule PatchbayWeb.ConfigurationLive do
   end
 
   defp script_label(path), do: path
+
+  # Structured editor helpers ------------------------------------------------
+
+  @exec_placeholder "/nix/store/.../bin/tool"
+
+  defp toolkit_meta(toolkit, config_dir) do
+    manifest = Structured.manifest_info(toolkit["toolkit"], config_dir)
+
+    env? =
+      (manifest && manifest.native == "secret-env") == true or
+        (toolkit["env"] || "") != ""
+
+    %{manifest: manifest, env?: env?}
+  end
+
+  defp manifest_tools_label(%{native: nil, operations: []}), do: "NO MANIFEST TOOLS"
+
+  defp manifest_tools_label(%{native: nil, operations: operations}),
+    do: "OPERATIONS " <> Enum.join(operations, ", ")
+
+  defp manifest_tools_label(%{native: native, tools: []}) when not is_nil(native),
+    do: "NO MODEL-FACING TOOLS"
+
+  defp manifest_tools_label(%{tools: tools}), do: "TOOLS " <> Enum.join(tools, ", ")
+
+  attr(:id, :string, required: true)
+  attr(:field, :string, required: true)
+  attr(:value, :string, required: true)
+
+  # Every accepted `[context]` recovery word is offered; the synonyms share
+  # the keep or reset behavior they currently map to.
+  defp context_value_select(assigns) do
+    keep = Structured.context_keep_values()
+    reset = Structured.context_reset_values()
+
+    assigns =
+      assign(assigns,
+        keep_values: keep,
+        reset_values: reset,
+        known_values: ["" | keep ++ reset]
+      )
+
+    ~H"""
+    <select id={@id} name={@field}>
+      <option value="" selected={@value == ""}>DEFAULT</option>
+      <optgroup label="KEEP — RESTORES PRIOR CONTEXT">
+        <option :for={value <- @keep_values} value={value} selected={@value == value}>
+          {heex_context_option(value, @keep_values)}
+        </option>
+      </optgroup>
+      <optgroup label="RESET — STARTS WITHOUT PRIOR CONTEXT">
+        <option :for={value <- @reset_values} value={value} selected={@value == value}>
+          {heex_context_option(value, @reset_values)}
+        </option>
+      </optgroup>
+      <option :if={@value not in @known_values} value={@value} selected>
+        {@value}
+      </option>
+    </select>
+    """
+  end
+
+  defp heex_context_option("keep", _all), do: "KEEP"
+  defp heex_context_option("reset", _all), do: "RESET"
+
+  defp heex_context_option(value, all) do
+    primary = if Enum.member?(all, "keep"), do: "KEEP", else: "RESET"
+
+    "#{String.upcase(value)} — SAME AS #{primary}"
+  end
+
+  attr(:kind, :string, required: true)
+  attr(:hooks, :list, required: true)
+
+  # Matches the fixed-operation schema without model-facing arguments: an
+  # executable must be absolute, and argv may start with it when no
+  # executable key is set.
+  defp hooks_section(assigns) do
+    assigns = assign(assigns, :exec_placeholder, @exec_placeholder)
+
+    ~H"""
+    <div class="struct-subhead">
+      <span>{String.upcase(@kind)} HOOKS <b>{length(@hooks)}</b></span>
+      <button class="filter" type="button" phx-click="add_hook" phx-value-hook={@kind}>
+        ADD {String.upcase(@kind)} HOOK
+      </button>
+    </div>
+
+    <article :for={{hook, index} <- Enum.with_index(@hooks)} class="struct-item nested">
+      <header class="struct-item-head">
+        <span>{String.upcase(@kind)} HOOK {index + 1}</span>
+        <button
+          class="filter"
+          type="button"
+          phx-click="remove_hook"
+          phx-value-hook={@kind}
+          phx-value-index={index}
+        >
+          REMOVE
+        </button>
+      </header>
+
+      <div class="struct-grid">
+        <div class="struct-field">
+          <label>NAME</label>
+          <input
+            name={"structured[lifecycle][#{@kind}][#{index}][name]"}
+            type="text"
+            value={hook["name"]}
+            autocomplete="off"
+            spellcheck="false"
+            phx-debounce="200"
+          />
+        </div>
+        <div class="struct-field">
+          <label>EXECUTABLE</label>
+          <input
+            name={"structured[lifecycle][#{@kind}][#{index}][executable]"}
+            type="text"
+            value={hook["executable"]}
+            placeholder={@exec_placeholder}
+            autocomplete="off"
+            spellcheck="false"
+            phx-debounce="200"
+          />
+        </div>
+        <div class="struct-field">
+          <label>DESCRIPTION</label>
+          <input
+            name={"structured[lifecycle][#{@kind}][#{index}][description]"}
+            type="text"
+            value={hook["description"]}
+            autocomplete="off"
+            spellcheck="false"
+            phx-debounce="200"
+          />
+        </div>
+      </div>
+
+      <div class="struct-field">
+        <label>ARGV (ONE PER LINE)</label>
+        <textarea
+          name={"structured[lifecycle][#{@kind}][#{index}][argv]"}
+          rows="3"
+          spellcheck="false"
+          phx-debounce="200"
+        >{hook["argv"]}</textarea>
+      </div>
+    </article>
+    """
+  end
 
   defp short_hash(nil), do: "—"
   defp short_hash(hash), do: String.slice(hash, 0, 12)
@@ -1402,108 +1636,36 @@ defmodule PatchbayWeb.ConfigurationLive do
                       </select>
                     </div>
                   </div>
-                </fieldset>
 
+                  <.hooks_section kind="init" hooks={@structured["lifecycle"]["init"]} />
+                  <.hooks_section kind="finalize" hooks={@structured["lifecycle"]["finalize"]} />
+                </fieldset>
                 <fieldset class="struct-group">
                   <legend>CONTEXT</legend>
                   <div class="struct-grid">
                     <div class="struct-field">
                       <label for="structured-context-between-runs">BETWEEN RUNS</label>
-                      <select
+                      <.context_value_select
                         id="structured-context-between-runs"
-                        name="structured[context][between_runs]"
-                      >
-                        <option
-                          value=""
-                          selected={@structured["context"]["between_runs"] == ""}
-                        >
-                          DEFAULT
-                        </option>
-                        <option
-                          value="keep"
-                          selected={@structured["context"]["between_runs"] == "keep"}
-                        >
-                          KEEP
-                        </option>
-                        <option
-                          value="reset"
-                          selected={@structured["context"]["between_runs"] == "reset"}
-                        >
-                          RESET
-                        </option>
-                        <option
-                          :if={@structured["context"]["between_runs"] not in ["", "keep", "reset"]}
-                          value={@structured["context"]["between_runs"]}
-                          selected
-                        >
-                          {@structured["context"]["between_runs"]}
-                        </option>
-                      </select>
+                        field="structured[context][between_runs]"
+                        value={@structured["context"]["between_runs"]}
+                      />
                     </div>
                     <div class="struct-field">
                       <label for="structured-context-prior-runs">PRIOR RUNS</label>
-                      <select
+                      <.context_value_select
                         id="structured-context-prior-runs"
-                        name="structured[context][prior_runs]"
-                      >
-                        <option value="" selected={@structured["context"]["prior_runs"] == ""}>
-                          DEFAULT
-                        </option>
-                        <option
-                          value="keep"
-                          selected={@structured["context"]["prior_runs"] == "keep"}
-                        >
-                          KEEP
-                        </option>
-                        <option
-                          value="reset"
-                          selected={@structured["context"]["prior_runs"] == "reset"}
-                        >
-                          RESET
-                        </option>
-                        <option
-                          :if={@structured["context"]["prior_runs"] not in ["", "keep", "reset"]}
-                          value={@structured["context"]["prior_runs"]}
-                          selected
-                        >
-                          {@structured["context"]["prior_runs"]}
-                        </option>
-                      </select>
+                        field="structured[context][prior_runs]"
+                        value={@structured["context"]["prior_runs"]}
+                      />
                     </div>
                     <div class="struct-field">
                       <label for="structured-context-restore-interrupted">RESTORE INTERRUPTED</label>
-                      <select
+                      <.context_value_select
                         id="structured-context-restore-interrupted"
-                        name="structured[context][restore_interrupted]"
-                      >
-                        <option
-                          value=""
-                          selected={@structured["context"]["restore_interrupted"] == ""}
-                        >
-                          DEFAULT
-                        </option>
-                        <option
-                          value="keep"
-                          selected={@structured["context"]["restore_interrupted"] == "keep"}
-                        >
-                          KEEP
-                        </option>
-                        <option
-                          value="reset"
-                          selected={@structured["context"]["restore_interrupted"] == "reset"}
-                        >
-                          RESET
-                        </option>
-                        <option
-                          :if={
-                            @structured["context"]["restore_interrupted"] not in ["", "keep", "reset"]
-                          }
-                          value={@structured["context"]["restore_interrupted"]}
-                          selected
-                        >
-                          {@structured["context"]["restore_interrupted"]}
-                        </option>
-                      </select>
+                        field="structured[context][restore_interrupted]"
+                        value={@structured["context"]["restore_interrupted"]}
+                      />
                     </div>
                     <div class="struct-field">
                       <label for="structured-context-threshold">COMPACTION THRESHOLD</label>
@@ -1526,6 +1688,56 @@ defmodule PatchbayWeb.ConfigurationLive do
                         value={@structured["context"]["target"]}
                         phx-debounce="200"
                       />
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>ENVIRONMENT</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-environment-packages">
+                        NIX PACKAGES (ONE PER LINE; RETAINED, NOT YET INSTALLED)
+                      </label>
+                      <textarea
+                        id="structured-environment-packages"
+                        name="structured[environment][packages]"
+                        rows="2"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      >{@structured["environment"]["packages"]}</textarea>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>TEARDOWN</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-teardown-workspace">WORKSPACE</label>
+                      <select
+                        id="structured-teardown-workspace"
+                        name="structured[teardown][workspace]"
+                      >
+                        <option value="" selected={@structured["teardown"]["workspace"] == ""}>
+                          DEFAULT
+                        </option>
+                        <option :for={action <- Structured.workspace_actions()} value={action} selected={
+                          @structured["teardown"]["workspace"] == action
+                        }>
+                          {String.upcase(action)}
+                        </option>
+                        <option
+                          :if={
+                            @structured["teardown"]["workspace"] not in
+                              ["" | Structured.workspace_actions()]
+                          }
+                          value={@structured["teardown"]["workspace"]}
+                          selected
+                        >
+                          {@structured["teardown"]["workspace"]}
+                        </option>
+                      </select>
                     </div>
                   </div>
                 </fieldset>
@@ -1562,6 +1774,21 @@ defmodule PatchbayWeb.ConfigurationLive do
                   <legend>TOOLKITS</legend>
                   <div class="struct-toolbar">
                     <span>DECLARED <b>{length(@structured["toolkits"])}</b></span>
+                    <select
+                      name="new_toolkit"
+                      aria-label="Available manifests"
+                    >
+                      <option value="" selected={@new_toolkit_name == ""}>
+                        PICK A MANIFEST (LEAVE BLANK FOR CUSTOM)
+                      </option>
+                      <option
+                        :for={name <- @structured_toolkit_names}
+                        value={name}
+                        selected={@new_toolkit_name == name}
+                      >
+                        {name}
+                      </option>
+                    </select>
                     <button class="filter" type="button" phx-click="add_toolkit">
                       ADD TOOLKIT
                     </button>
@@ -1575,8 +1802,13 @@ defmodule PatchbayWeb.ConfigurationLive do
                     :for={{toolkit, toolkit_index} <- Enum.with_index(@structured["toolkits"])}
                     class="struct-item"
                   >
+                    <% meta = toolkit_meta(toolkit, @config_dir) %>
                     <header class="struct-item-head">
-                      <span>TOOLKIT {toolkit_index + 1}</span>
+                      <span>TOOLKIT {toolkit_index + 1}
+                        <span :if={meta.manifest} class="panel-meta">
+                          {manifest_tools_label(meta.manifest)}
+                        </span>
+                      </span>
                       <button
                         class="filter"
                         type="button"
@@ -1651,6 +1883,21 @@ defmodule PatchbayWeb.ConfigurationLive do
                           phx-debounce="200"
                         />
                       </div>
+                      <div
+                        :if={meta.env?}
+                        class="struct-field"
+                      >
+                        <label for={"structured-toolkit-env-#{toolkit_index}"}>
+                          ENVIRONMENT SECRETS (NAME=secret://ref, ONE PER LINE)
+                        </label>
+                        <textarea
+                          id={"structured-toolkit-env-#{toolkit_index}"}
+                          name={"structured[toolkits][#{toolkit_index}][env]"}
+                          rows="3"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        >{toolkit["env"]}</textarea>
+                      </div>
                     </div>
 
                     <div class="struct-subhead">
@@ -1702,7 +1949,7 @@ defmodule PatchbayWeb.ConfigurationLive do
                             name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][executable]"}
                             type="text"
                             value={operation["executable"]}
-                            placeholder="/bin/echo"
+                            placeholder="/nix/store/.../bin/tool"
                             autocomplete="off"
                             spellcheck="false"
                             phx-debounce="200"
@@ -1730,6 +1977,103 @@ defmodule PatchbayWeb.ConfigurationLive do
                           phx-debounce="200"
                         >{operation["argv"]}</textarea>
                       </div>
+
+                      <div class="struct-subhead">
+                        <span>ARGUMENTS <b>{length(operation["arguments"] || [])}</b></span>
+                        <button
+                          class="filter"
+                          type="button"
+                          phx-click="add_argument"
+                          phx-value-toolkit={toolkit_index}
+                          phx-value-operation={operation_index}
+                        >
+                          ADD ARGUMENT
+                        </button>
+                      </div>
+
+                      <article
+                        :for={
+                          {argument, argument_index} <- Enum.with_index(operation["arguments"] || [])
+                        }
+                        class="struct-item nested"
+                      >
+                        <header class="struct-item-head">
+                          <span>ARGUMENT {argument_index + 1}
+                            <span class="panel-meta">{String.upcase(argument["type"] || "")}</span>
+                          </span>
+                          <button
+                            class="filter"
+                            type="button"
+                            phx-click="remove_argument"
+                            phx-value-toolkit={toolkit_index}
+                            phx-value-operation={operation_index}
+                            phx-value-index={argument_index}
+                          >
+                            REMOVE
+                          </button>
+                        </header>
+
+                        <div class="struct-grid">
+                          <div class="struct-field">
+                            <label>NAME</label>
+                            <input
+                              name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][arguments][#{argument_index}][name]"}
+                              type="text"
+                              value={argument["name"]}
+                              autocomplete="off"
+                              spellcheck="false"
+                              phx-debounce="200"
+                            />
+                          </div>
+                          <div class="struct-field">
+                            <label>TYPE</label>
+                            <select
+                              name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][arguments][#{argument_index}][type]"}
+                            >
+                              <option
+                                :for={type <- Structured.argument_types()}
+                                value={type}
+                                selected={argument["type"] == type}
+                              >
+                                {String.upcase(type)}
+                              </option>
+                              <option
+                                :if={argument["type"] not in Structured.argument_types()}
+                                value={argument["type"]}
+                                selected
+                              >
+                                {argument["type"]}
+                              </option>
+                            </select>
+                          </div>
+                          <div class="struct-field">
+                            <label>REQUIRED</label>
+                            <select
+                              name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][arguments][#{argument_index}][required]"}
+                            >
+                              <option value="" selected={argument["required"] == ""}>
+                                DEFAULT (FROM ARGV)
+                              </option>
+                              <option value="true" selected={argument["required"] == "true"}>
+                                REQUIRED
+                              </option>
+                              <option value="false" selected={argument["required"] == "false"}>
+                                OPTIONAL
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div :if={argument["type"] == "enum"} class="struct-field">
+                          <label>VALUES (ONE PER LINE)</label>
+                          <textarea
+                            name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][arguments][#{argument_index}][values]"}
+                            rows="2"
+                            spellcheck="false"
+                            phx-debounce="200"
+                          >{argument["values"]}</textarea>
+                        </div>
+                      </article>
                     </article>
                   </article>
                 </fieldset>
