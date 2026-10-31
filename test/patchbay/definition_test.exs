@@ -588,23 +588,23 @@ defmodule Patchbay.DefinitionTest do
       assert [%{name: "status", executable: "/bin/echo", argv: []}] = toolkit.operations
     end
 
-    test "rejects a relative operation executable" do
-      errors =
-        parse_errors(
-          minimal(
-            extra: """
-            [[toolkits]]
-            toolkit = "fixed-operations"
+    test "accepts a bare operation executable" do
+      body =
+        minimal(
+          extra: """
+          [[toolkits]]
+          toolkit = "fixed-operations"
 
-            [[toolkits.operations]]
-            name = "status"
-            executable = "echo"
-            argv = []
-            """
-          )
+          [[toolkits.operations]]
+          name = "status"
+          executable = "echo"
+          argv = []
+          """
         )
 
-      assert error?(errors, ["toolkits", 0, "operations", 0, "executable"], "absolute path")
+      assert {:ok, %{toolkits: [toolkit]}} = Definition.parse(body)
+
+      assert [%{name: "status", executable: "echo", argv: []}] = toolkit.operations
     end
 
     test "rejects toolkit declarations without a provider" do

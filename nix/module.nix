@@ -326,6 +326,16 @@ in {
         description = "Extra arguments appended to the run-worker-supervisor command.";
       };
 
+      packages = mkOption {
+        type = types.listOf types.package;
+        default = [];
+        description = ''
+          Packages added to the worker supervisor PATH. Workers and their
+          operation and lifecycle hook children inherit this PATH, so bare
+          executable names such as `git` resolve there.
+        '';
+      };
+
       environment = mkOption {
         type = types.attrsOf types.str;
         default = {};
@@ -612,7 +622,10 @@ in {
       ];
 
       environment = supervisorEnvironment;
-      path = [cfg.package pkgs.coreutils pkgs.procps pkgs.bash] ++ cfg.extraPackages;
+      path =
+        [cfg.package pkgs.coreutils pkgs.procps pkgs.bash]
+        ++ cfg.extraPackages
+        ++ cfg.workerSupervisor.packages;
 
       serviceConfig = {
         Type = "simple";

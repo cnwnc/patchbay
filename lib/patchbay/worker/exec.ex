@@ -7,8 +7,10 @@ defmodule Patchbay.Worker.Exec do
   is closed before the partial output is returned with an error tagged by the
   limit that fired.
 
-  The executable must be an absolute path to a regular executable file.
-  Arguments must already be binaries; each becomes exactly one argv element.
+  The executable may be an absolute path, a relative path, or a bare command
+  name. Bare names and relative paths are resolved at execution time from the
+  worker's `PATH` or working directory before the port is opened. Arguments
+  must already be binaries; each becomes exactly one argv element.
   """
 
   import Bitwise
@@ -59,19 +61,21 @@ defmodule Patchbay.Worker.Exec do
     cd = Keyword.get(opts, :cd)
     secret_names = Keyword.get(opts, :secret_names, [])
 
-    with :ok <- validate_executable(executable),
+    with :ok <- validate_executable_name(executable),
          :ok <- validate_args(args),
          :ok <- validate_timeout(timeout),
          :ok <- validate_output_limit(max_output),
-         :ok <- validate_working_directory(cd) do
+         :ok <- validate_working_directory(cd),
+         {:ok, executable} <- resolve_executable(executable, cd) do
       do_run(executable, args, cd, timeout, max_output, secret_names)
     end
   end
 
-  @doc "Checks that `path` names an absolute executable regular file."
+  @doc "Checks that `path` names a resolvable executable file."
   @spec valid_executable?(term()) :: boolean()
   def valid_executable?(path) when is_binary(path) do
-    validate_executable(path) == :ok
+    validate_executable_name(path) == :ok and
+      match?({:ok, _path}, resolve_executable(path, nil))
   end
 
   def valid_executable?(_path), do: false
@@ -80,7 +84,36 @@ defmodule Patchbay.Worker.Exec do
   @spec validate_arguments(term()) :: :ok | {:error, :invalid_arguments}
   def validate_arguments(args), do: validate_args(args)
 
-  defp validate_executable(path) do
+  defp resolve_executable(executable, cd) do
+    cond do
+      Path.type(executable) == :absolute ->
+        resolve_file(executable)
+
+      String.contains?(executable, "/") ->
+        resolve_file(Path.expand(executable, cd || File.cwd!()))
+
+      true ->
+        find_in_path(executable)
+    end
+  end
+
+  defp resolve_file(path) do
+    if executable_file?(path), do: {:ok, path}, else: {:error, :invalid_executable}
+  end
+
+  defp find_in_path(name) do
+    System.get_env("PATH", "")
+    |> String.split(":", trim: true)
+    |> Enum.filter(&(Path.type(&1) == :absolute))
+    |> Enum.map(&Path.join(&1, name))
+    |> Enum.find(&executable_file?/1)
+    |> case do
+      nil -> {:error, :invalid_executable}
+      path -> {:ok, path}
+    end
+  end
+
+  defp validate_executable_name(path) do
     cond do
       not is_binary(path) ->
         {:error, :invalid_executable}
@@ -94,17 +127,18 @@ defmodule Patchbay.Worker.Exec do
       contains_nul?(path) ->
         {:error, :invalid_executable}
 
-      Path.type(path) != :absolute ->
+      String.trim(path) == "" ->
         {:error, :invalid_executable}
 
       true ->
-        case File.stat(path) do
-          {:ok, %File.Stat{type: :regular, mode: mode}} ->
-            if (mode &&& 0o111) != 0, do: :ok, else: {:error, :invalid_executable}
+        :ok
+    end
+  end
 
-          _other ->
-            {:error, :invalid_executable}
-        end
+  defp executable_file?(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} -> (mode &&& 0o111) != 0
+      _other -> false
     end
   end
 

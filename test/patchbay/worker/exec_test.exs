@@ -49,8 +49,16 @@ defmodule Patchbay.Worker.ExecTest do
     assert {:error, :timeout} = Exec.run(sleep, ["5"], timeout: 100)
   end
 
-  test "rejects relative executables and invalid argv" do
-    assert {:error, :invalid_executable} = Exec.run("echo", [])
+  test "resolves bare executables on PATH and rejects invalid argv" do
+    assert Exec.valid_executable?("echo")
+    refute Exec.valid_executable?("definitely-not-a-patchbay-command")
+
+    assert {:ok, result} = Exec.run("echo", ["bare command"])
+    assert result.output == "bare command\n"
+
+    assert {:error, :invalid_executable} =
+             Exec.run("definitely-not-a-patchbay-command", [])
+
     assert {:error, :invalid_executable} = Exec.run("/definitely/not/a/command", [])
 
     echo = executable!("echo")

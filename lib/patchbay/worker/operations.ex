@@ -18,6 +18,8 @@ defmodule Patchbay.Worker.Operations do
   filled from validated model-facing arguments. Rendering substitutes within
   an argv element and never splits one element into several; it is single pass
   and `{{`/`}}` escape literal braces. Execution does not invoke a shell.
+  `executable` may be an absolute path or a bare command name resolved on the
+  worker's `PATH` when the operation runs.
 
   Operation files are external terms decoded with `[:safe]`. They are expected
   to be manager-owned configuration, written per worker, not model input.
@@ -258,10 +260,18 @@ defmodule Patchbay.Worker.Operations do
 
   defp validate_executable(executable) do
     cond do
-      not is_binary(executable) or not String.valid?(executable) -> {:error, :invalid_executable}
-      Path.type(executable) != :absolute -> {:error, {:non_absolute_executable, executable}}
-      not Exec.valid_executable?(executable) -> {:error, {:invalid_executable, executable}}
-      true -> :ok
+      not is_binary(executable) or not String.valid?(executable) or
+          String.trim(executable) == "" ->
+        {:error, :invalid_executable}
+
+      :binary.match(executable, <<0>>) != :nomatch ->
+        {:error, :invalid_executable}
+
+      Path.type(executable) == :absolute and not Exec.valid_executable?(executable) ->
+        {:error, {:invalid_executable, executable}}
+
+      true ->
+        :ok
     end
   end
 

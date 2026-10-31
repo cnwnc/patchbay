@@ -155,8 +155,13 @@ defmodule Patchbay.Worker.OperationsTest do
   end
 
   test "validates operation declarations", %{echo: echo} do
-    assert {:error, {:non_absolute_executable, "echo"}} =
-             Operations.validate([%{name: "bad", executable: "echo", argv: []}])
+    assert {:ok, [bare]} =
+             Operations.validate([%{name: "bare", executable: "echo", argv: []}])
+
+    assert bare.executable == "echo"
+
+    assert {:error, :invalid_executable} =
+             Operations.validate([%{name: "blank", executable: " ", argv: []}])
 
     assert {:error, {:invalid_operation_name, "Bad Name"}} =
              Operations.validate([%{name: "Bad Name", executable: echo, argv: []}])
@@ -171,6 +176,18 @@ defmodule Patchbay.Worker.OperationsTest do
                %{name: "same", executable: echo, argv: []},
                %{name: "same", executable: echo, argv: []}
              ])
+  end
+
+  test "executes an operation whose executable is a bare PATH name", %{
+    workspace: workspace
+  } do
+    operation = %{name: "say", executable: "echo", argv: ["bare-path"], arguments: %{}}
+
+    assert {:ok, result} =
+             Operations.execute([operation], "say", %{}, workspace: workspace)
+
+    assert result.status == :ok
+    assert result.output == "bare-path\n"
   end
 
   test "rejects unsafe operation files", %{tmp: tmp} do

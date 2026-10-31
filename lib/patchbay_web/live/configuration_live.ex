@@ -1098,7 +1098,8 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   # Structured editor helpers ------------------------------------------------
 
-  @exec_placeholder "/nix/store/.../bin/tool"
+  @exec_placeholder "git or /nix/store/.../bin/tool"
+  @arguments_placeholder "clone\nhttps://github.com/owner/repo"
 
   defp toolkit_meta(toolkit, config_dir) do
     manifest = Structured.manifest_info(toolkit["toolkit"], config_dir)
@@ -1139,7 +1140,7 @@ defmodule PatchbayWeb.ConfigurationLive do
 
     ~H"""
     <select id={@id} name={@field}>
-      <option value="" selected={@value == ""}>DEFAULT</option>
+      <option value="" selected={@value == ""}>LIFECYCLE RULES</option>
       <optgroup label="KEEP — RESTORES PRIOR CONTEXT">
         <option :for={value <- @keep_values} value={value} selected={@value == value}>
           {heex_context_option(value, @keep_values)}
@@ -1169,11 +1170,15 @@ defmodule PatchbayWeb.ConfigurationLive do
   attr(:kind, :string, required: true)
   attr(:hooks, :list, required: true)
 
-  # Matches the fixed-operation schema without model-facing arguments: an
-  # executable must be absolute, and argv may start with it when no
+  # Matches the fixed-operation schema without model-facing arguments: the
+  # executable may be bare or absolute, and argv may start with it when no
   # executable key is set.
   defp hooks_section(assigns) do
-    assigns = assign(assigns, :exec_placeholder, @exec_placeholder)
+    assigns =
+      assign(assigns,
+        exec_placeholder: @exec_placeholder,
+        arguments_placeholder: @arguments_placeholder
+      )
 
     ~H"""
     <div class="struct-subhead">
@@ -1235,10 +1240,11 @@ defmodule PatchbayWeb.ConfigurationLive do
       </div>
 
       <div class="struct-field">
-        <label>ARGV (ONE PER LINE)</label>
+        <label>ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)</label>
         <textarea
           name={"structured[lifecycle][#{@kind}][#{index}][argv]"}
           rows="3"
+          placeholder={@arguments_placeholder}
           spellcheck="false"
           phx-debounce="200"
         >{hook["argv"]}</textarea>
@@ -1252,6 +1258,12 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   @impl true
   def render(assigns) do
+    assigns =
+      assign(assigns,
+        exec_placeholder: @exec_placeholder,
+        arguments_placeholder: @arguments_placeholder
+      )
+
     ~H"""
     <div class="console">
       <header class="masthead">
@@ -1592,12 +1604,9 @@ defmodule PatchbayWeb.ConfigurationLive do
                     >
                       <label for="structured-lifecycle-overlap">OVERLAP</label>
                       <select id="structured-lifecycle-overlap" name="structured[lifecycle][overlap]">
-                        <option value="" selected={@structured["lifecycle"]["overlap"] == ""}>
-                          DEFAULT
-                        </option>
                         <option
                           value="forbid"
-                          selected={@structured["lifecycle"]["overlap"] == "forbid"}
+                          selected={@structured["lifecycle"]["overlap"] in ["", "forbid"]}
                         >
                           FORBID
                         </option>
@@ -1612,12 +1621,9 @@ defmodule PatchbayWeb.ConfigurationLive do
                         id="structured-lifecycle-catch-up"
                         name="structured[lifecycle][catch_up]"
                       >
-                        <option value="" selected={@structured["lifecycle"]["catch_up"] == ""}>
-                          DEFAULT
-                        </option>
                         <option
                           value="none"
-                          selected={@structured["lifecycle"]["catch_up"] == "none"}
+                          selected={@structured["lifecycle"]["catch_up"] in ["", "none"]}
                         >
                           NONE
                         </option>
@@ -1714,17 +1720,22 @@ defmodule PatchbayWeb.ConfigurationLive do
                   <legend>WORKSPACE</legend>
                   <div class="struct-grid">
                     <div class="struct-field">
-                      <label for="structured-workspace-enabled">ENABLED</label>
+                      <label for="structured-workspace-enabled">ALLOCATE WORKSPACE</label>
                       <select
                         id="structured-workspace-enabled"
                         name="structured[workspace][enabled]"
                       >
                         <option
-                          :for={state <- Structured.workspace_states()}
-                          value={state}
-                          selected={@structured["workspace"]["enabled"] == state}
+                          value="enabled"
+                          selected={@structured["workspace"]["enabled"] in ["", "enabled", "true", "yes"]}
                         >
-                          {if state == "", do: "DEFAULT (ON)", else: String.upcase(state)}
+                          YES
+                        </option>
+                        <option
+                          value="disabled"
+                          selected={@structured["workspace"]["enabled"] in ["disabled", "false", "no"]}
+                        >
+                          NO
                         </option>
                       </select>
                       <p class="panel-meta">
@@ -1743,11 +1754,9 @@ defmodule PatchbayWeb.ConfigurationLive do
                         id="structured-teardown-workspace"
                         name="structured[teardown][workspace]"
                       >
-                        <option value="" selected={@structured["teardown"]["workspace"] == ""}>
-                          DEFAULT
-                        </option>
                         <option :for={action <- Structured.workspace_actions()} value={action} selected={
-                          @structured["teardown"]["workspace"] == action
+                          @structured["teardown"]["workspace"] == action or
+                            (action == "retain" and @structured["teardown"]["workspace"] == "")
                         }>
                           {String.upcase(action)}
                         </option>
@@ -1803,7 +1812,7 @@ defmodule PatchbayWeb.ConfigurationLive do
                       aria-label="Available manifests"
                     >
                       <option value="" selected={@new_toolkit_name == ""}>
-                        PICK A MANIFEST (LEAVE BLANK FOR CUSTOM)
+                        CUSTOM TOOLKIT
                       </option>
                       <option
                         :for={name <- @structured_toolkit_names}
@@ -1973,7 +1982,7 @@ defmodule PatchbayWeb.ConfigurationLive do
                             name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][executable]"}
                             type="text"
                             value={operation["executable"]}
-                            placeholder="/nix/store/.../bin/tool"
+                            placeholder={@exec_placeholder}
                             autocomplete="off"
                             spellcheck="false"
                             phx-debounce="200"
@@ -1993,10 +2002,11 @@ defmodule PatchbayWeb.ConfigurationLive do
                       </div>
 
                       <div class="struct-field">
-                        <label>ARGV (ONE PER LINE)</label>
+                        <label>ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)</label>
                         <textarea
                           name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][argv]"}
                           rows="3"
+                          placeholder={@arguments_placeholder}
                           spellcheck="false"
                           phx-debounce="200"
                         >{operation["argv"]}</textarea>
@@ -2075,14 +2085,11 @@ defmodule PatchbayWeb.ConfigurationLive do
                             <select
                               name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][arguments][#{argument_index}][required]"}
                             >
-                              <option value="" selected={argument["required"] == ""}>
-                                DEFAULT (FROM ARGV)
-                              </option>
-                              <option value="true" selected={argument["required"] == "true"}>
-                                REQUIRED
+                              <option value="true" selected={argument["required"] in ["", "true"]}>
+                                YES
                               </option>
                               <option value="false" selected={argument["required"] == "false"}>
-                                OPTIONAL
+                                NO
                               </option>
                             </select>
                           </div>
@@ -2166,10 +2173,10 @@ defmodule PatchbayWeb.ConfigurationLive do
                           disabled={result["required_by"] != ""}
                         >
                           <option value="true" selected={result["required"] != "false"}>
-                            REQUIRED
+                            YES
                           </option>
                           <option value="false" selected={result["required"] == "false"}>
-                            OPTIONAL
+                            NO
                           </option>
                         </select>
                       </div>

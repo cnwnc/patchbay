@@ -4,7 +4,9 @@ defmodule Patchbay.Definition.Toolkit.Operation do
 
   `argv` is required and, when `executable` is omitted, its first element is
   the executable. Supplying `executable` explicitly makes `argv` the argument
-  vector. `Patchbay.Worker.Operations.from_definition/1` converts validated
+  vector. An executable may be an absolute path or a bare command name; bare
+  names are resolved on the worker's `PATH` at execution time.
+  `Patchbay.Worker.Operations.from_definition/1` converts validated
   declarations into the worker's fixed operation schema.
 
   Model-facing arguments may be declared in an `arguments` table or directly
@@ -139,17 +141,7 @@ defmodule Patchbay.Definition.Toolkit.Operation do
   end
 
   defp executable_from(raw, path, errors) do
-    case Parse.optional_string(raw, "executable", path ++ ["executable"], errors) do
-      {nil, errors} ->
-        {nil, errors}
-
-      {executable, errors} ->
-        if Path.type(executable) == :absolute do
-          {executable, errors}
-        else
-          {nil, Parse.error(errors, path ++ ["executable"], "must be an absolute path")}
-        end
-    end
+    Parse.optional_string(raw, "executable", path ++ ["executable"], errors)
   end
 
   defp argv_from(raw, executable, path, errors) do
@@ -262,10 +254,10 @@ defmodule Patchbay.Definition.Toolkit.Operation do
   end
 
   defp validate_hook_executable(nil, [executable | _args], path, errors) do
-    if is_binary(executable) and Path.type(executable) == :absolute do
+    if is_binary(executable) and String.trim(executable) != "" do
       errors
     else
-      Parse.error(errors, path ++ ["argv", 0], "must be an absolute path")
+      Parse.error(errors, path ++ ["argv", 0], "must name an executable")
     end
   end
 

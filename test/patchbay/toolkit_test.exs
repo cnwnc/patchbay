@@ -496,6 +496,28 @@ defmodule Patchbay.ToolkitTest do
                lifecycle.finalize
     end
 
+    test "accepts a bare hook executable" do
+      body =
+        hook_agent("""
+        [[lifecycle.init]]
+        name = "prepare"
+        executable = "echo"
+        argv = ["{%agent_id}"]
+
+        [[lifecycle.finalize]]
+        name = "cleanup"
+        argv = ["echo", "{%run_state}"]
+        """)
+
+      assert {:ok, %{lifecycle: lifecycle}} = Definition.parse(body)
+
+      assert [%{name: "prepare", executable: "echo", argv: ["{%agent_id}"]}] =
+               lifecycle.init
+
+      assert [%{name: "cleanup", executable: nil, argv: ["echo", "{%run_state}"]}] =
+               lifecycle.finalize
+    end
+
     test "rejects model arguments in a lifecycle hook" do
       body =
         hook_agent("""

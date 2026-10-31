@@ -25,6 +25,7 @@ defmodule Patchbay.Config.Structured do
   alias Patchbay.Toolkit.Name
   alias Patchbay.Toolkit.Native.Filesystem
   alias Patchbay.Toolkit.Registry
+  alias Patchbay.Toolkit.Variables
   alias TomlElixir.Document
 
   @lifecycle_kinds ["one-shot", "scheduled", "perpetual"]
@@ -70,13 +71,12 @@ defmodule Patchbay.Config.Structured do
   def workspace_actions, do: @workspace_actions
 
   @doc """
-  `[workspace] enabled` states the workspace section edits.
+  Concrete `[workspace] enabled` states the workspace section edits.
 
-  Blank means the key is absent, which stays enabled for compatibility with
-  existing definitions.
+  An absent key means allocation is enabled.
   """
   @spec workspace_states() :: [String.t()]
-  def workspace_states, do: ["", "enabled", "disabled"]
+  def workspace_states, do: ["enabled", "disabled"]
 
   @spec load(String.t(), Path.t() | nil, String.t()) ::
           {:ok, %{document: Document.t(), form: form()}} | {:error, String.t()}
@@ -360,8 +360,8 @@ defmodule Patchbay.Config.Structured do
       "lifecycle" => %{
         "kind" => normalize_kind(lifecycle["kind"]),
         "schedule" => string(lifecycle["schedule"]),
-        "overlap" => string(lifecycle["overlap"]),
-        "catch_up" => string(lifecycle["catch-up"]),
+        "overlap" => lifecycle_default(lifecycle["overlap"], lifecycle, "forbid"),
+        "catch_up" => lifecycle_default(lifecycle["catch-up"], lifecycle, "none"),
         "schedule_draft" => "",
         "overlap_draft" => "",
         "catch_up_draft" => "",
@@ -376,8 +376,10 @@ defmodule Patchbay.Config.Structured do
         "target" => integer_string(context["target"])
       },
       "environment" => %{"packages" => list_text(environment["packages"])},
-      "workspace" => %{"enabled" => enabled_text(table(data["workspace"])["enabled"])},
-      "teardown" => %{"workspace" => string(teardown["workspace"])},
+      "workspace" => %{
+        "enabled" => default_text(enabled_text(table(data["workspace"])["enabled"]), "enabled")
+      },
+      "teardown" => %{"workspace" => default_text(string(teardown["workspace"]), "retain")},
       "budgets" => %{
         "run_seconds" => integer_string(budgets["run-seconds"]),
         "tokens" => integer_string(budgets["tokens"])
@@ -388,6 +390,19 @@ defmodule Patchbay.Config.Structured do
   end
 
   defp form_from_data(_data, _config_dir), do: empty_form()
+
+  defp lifecycle_default(value, lifecycle, default) do
+    if normalize_kind(lifecycle["kind"]) == "scheduled",
+      do: default_text(value, default),
+      else: string(value)
+  end
+
+  defp default_text(value, default) do
+    case String.trim(string(value)) do
+      "" -> default
+      _value -> string(value)
+    end
+  end
 
   defp empty_form do
     %{
@@ -412,8 +427,8 @@ defmodule Patchbay.Config.Structured do
         "target" => ""
       },
       "environment" => %{"packages" => ""},
-      "workspace" => %{"enabled" => ""},
-      "teardown" => %{"workspace" => ""},
+      "workspace" => %{"enabled" => "enabled"},
+      "teardown" => %{"workspace" => "retain"},
       "budgets" => %{"run_seconds" => "", "tokens" => ""},
       "toolkits" => [],
       "results" => []
@@ -583,6 +598,8 @@ defmodule Patchbay.Config.Structured do
   # Argument declarations can reach the form through an `arguments` table, an
   # `arguments` array of tables, or child tables under the operation itself.
   defp arguments_from_data(operation) when is_map(operation) do
+    referenced = referenced_arguments(operation["argv"])
+
     declared =
       case Map.get(operation, "arguments") do
         declaration when is_map(declaration) or is_list(declaration) ->
@@ -606,12 +623,20 @@ defmodule Patchbay.Config.Structured do
         "name" => string(name),
         "type" => string(declaration["type"]),
         "values" => list_text(declaration["values"]),
-        "required" => required_string(declaration["required"])
+        "required" => required_string(declaration["required"], MapSet.member?(referenced, name))
       }
     end)
   end
 
   defp arguments_from_data(_operation), do: []
+
+  defp referenced_arguments(argv) do
+    argv
+    |> List.wrap()
+    |> Enum.filter(&is_binary/1)
+    |> Enum.flat_map(&Variables.references(&1).arguments)
+    |> MapSet.new()
+  end
 
   @doc false
   def argument_entries(declaration) when is_map(declaration) do
@@ -625,13 +650,13 @@ defmodule Patchbay.Config.Structured do
     end)
   end
 
-  defp required_string(value) do
+  defp required_string(value, derived) do
     case value do
       true -> "true"
       false -> "false"
       "true" -> "true"
       "false" -> "false"
-      _other -> ""
+      _other -> if derived, do: "true", else: "false"
     end
   end
 
@@ -1023,14 +1048,8 @@ defmodule Patchbay.Config.Structured do
       not Name.valid?(name) ->
         {:error, "#{label} name must use letters, digits, underscores, or hyphens."}
 
-      executable != "" and Path.type(executable) != :absolute ->
-        {:error, "#{label} executable must be an absolute path."}
-
       executable == "" and argv == [] ->
-        {:error, "#{label} requires argv when no executable is set."}
-
-      executable == "" and Path.type(List.first(argv)) != :absolute ->
-        {:error, "#{label} argv must start with an absolute path to the executable."}
+        {:error, "#{label} requires arguments when no executable is set."}
 
       true ->
         :ok
@@ -1062,10 +1081,10 @@ defmodule Patchbay.Config.Structured do
   defp validate_workspace(workspace) do
     value = String.trim(string(workspace["enabled"]))
 
-    if value in ["", "enabled", "disabled"] do
+    if value in ["", "enabled", "disabled", "true", "false", "yes", "no"] do
       :ok
     else
-      {:error, "Workspace enabled must be empty, enabled, or disabled."}
+      {:error, "Workspace allocation must be yes or no."}
     end
   end
 
@@ -1230,11 +1249,8 @@ defmodule Patchbay.Config.Structured do
       not Name.valid?(name) ->
         {:error, "#{label} name must use letters, digits, underscores, or hyphens."}
 
-      executable != "" and Path.type(executable) != :absolute ->
-        {:error, "#{label} executable must be an absolute path."}
-
       executable == "" and argv == [] ->
-        {:error, "#{label} requires argv when no executable is set."}
+        {:error, "#{label} requires arguments when no executable is set."}
 
       true ->
         validate_arguments(operation["arguments"] || [], label)
@@ -1476,9 +1492,19 @@ defmodule Patchbay.Config.Structured do
         with {:ok, document} <-
                put_string(document, ["lifecycle", "schedule"], lifecycle["schedule"]),
              {:ok, document} <-
-               put_string(document, ["lifecycle", "overlap"], lifecycle["overlap"]),
+               put_default_string(
+                 document,
+                 ["lifecycle", "overlap"],
+                 lifecycle["overlap"],
+                 "forbid"
+               ),
              {:ok, document} <-
-               put_string(document, ["lifecycle", "catch-up"], lifecycle["catch_up"]) do
+               put_default_string(
+                 document,
+                 ["lifecycle", "catch-up"],
+                 lifecycle["catch_up"],
+                 "none"
+               ) do
           {:ok, document}
         end
       else
@@ -1550,19 +1576,25 @@ defmodule Patchbay.Config.Structured do
     put_list(document, ["environment", "packages"], value_lines(environment["packages"]))
   end
 
-  # A blank state keeps the key absent, so older definitions stay enabled
-  # without being rewritten on every save.
+  # Allocation is on by default, so the default state stays absent.
   defp apply_workspace(document, workspace) do
     case String.trim(string(workspace["enabled"])) do
-      "" -> delete(document, ["workspace", "enabled"])
-      "disabled" -> Document.put(document, ["workspace", "enabled"], false)
-      "enabled" -> Document.put(document, ["workspace", "enabled"], true)
-      _other -> {:error, "Workspace enabled must be empty, enabled, or disabled."}
+      state when state in ["", "enabled", "true", "yes"] ->
+        delete(document, ["workspace", "enabled"])
+
+      state when state in ["disabled", "false", "no"] ->
+        Document.put(document, ["workspace", "enabled"], false)
+
+      _other ->
+        {:error, "Workspace allocation must be yes or no."}
     end
   end
 
   defp apply_teardown(document, teardown) do
-    put_string(document, ["teardown", "workspace"], teardown["workspace"])
+    case String.trim(string(teardown["workspace"])) do
+      state when state in ["", "retain"] -> delete(document, ["teardown", "workspace"])
+      state -> Document.put(document, ["teardown", "workspace"], state)
+    end
   end
 
   defp apply_budgets(document, budgets) do
@@ -1686,9 +1718,9 @@ defmodule Patchbay.Config.Structured do
       else: Map.merge(existing, declared)
   end
 
-  defp declared_arguments(operations, by_name) do
+  defp declared_arguments(arguments_list, by_name) do
     arguments =
-      operations
+      arguments_list
       |> Enum.map(fn argument ->
         name = String.trim(string(argument["name"]))
         {name, build_argument(Map.get(by_name, name, %{}), argument)}
@@ -1807,6 +1839,14 @@ defmodule Patchbay.Config.Structured do
   defp put_string(document, path, value) do
     case String.trim(string(value)) do
       "" -> delete(document, path)
+      value -> Document.put(document, path, value)
+    end
+  end
+
+  defp put_default_string(document, path, value, default) do
+    case String.trim(string(value)) do
+      "" -> delete(document, path)
+      ^default -> delete(document, path)
       value -> Document.put(document, path, value)
     end
   end

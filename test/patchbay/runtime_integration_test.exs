@@ -443,6 +443,7 @@ defmodule Patchbay.RuntimeIntegrationTest do
     config_root = Path.join(context.tmp, "config")
     agent_dir = Path.join([config_root, "agents", id])
     File.mkdir_p!(agent_dir)
+    shell = Path.basename(sh)
 
     File.write!(Path.join(agent_dir, "agent.toml"), """
     format-version = 1
@@ -456,12 +457,12 @@ defmodule Patchbay.RuntimeIntegrationTest do
 
     [[lifecycle.init]]
     name = "scratch"
-    executable = "#{sh}"
+    executable = "#{shell}"
     argv = ["-c", "mkdir -p {%workspace}/run/deep/nested && echo worker-written > {%workspace}/run/deep/nested/proof.txt && printf %s $PATCHBAY_WORKER_INSTANCE > {%workspace}/worker-instance.txt"]
 
     [[lifecycle.finalize]]
     name = "leave"
-    executable = "#{sh}"
+    executable = "#{shell}"
     argv = ["-c", "echo done > {%workspace}/finalized.txt"]
     """)
 

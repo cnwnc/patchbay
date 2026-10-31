@@ -30,6 +30,12 @@ nix build .#default
 nix run .#default -- help
 ```
 
+Operations and lifecycle hooks may use bare executable names such as `git`. They are resolved on the worker's `PATH` when the operation runs, so packages that should be visible to workers belong on the worker supervisor's path:
+
+```nix
+services.patchbay.workerSupervisor.packages = [ pkgs.git ];
+```
+
 The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`).
 
 The Console, Configuration, and artifact download routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
@@ -67,9 +73,9 @@ The `/config` route has SOURCE and STRUCTURED tabs for the selected definition. 
 
 The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, and reasoning; lifecycle kind, schedule, overlap, and catch-up; `[[lifecycle.init]]` and `[[lifecycle.finalize]]` hooks; environment packages; workspace allocation; context recovery and compaction thresholds; teardown workspace; budgets; toolkits and results. Invalid or blank definitions use the source editor only.
 
-Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check, and which accepts `{%variable}` tokens such as `{%workspace}`, as its field label notes), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
+Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by choosing CUSTOM TOOLKIT and typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check, and which accepts `{%variable}` tokens such as `{%workspace}`, as its field label notes), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
 
-Inline `[[toolkits.operations]]` are edited with executable, argv, and model-facing arguments. Argument rows carry the type (string, number, integer, boolean, enum, path, file, directory), an explicit required flag, and for `enum` the accepted values. Lifecycle hooks use the fixed-operation schema with its hook restrictions (absolute executable, no model-facing arguments); the placeholders use `/nix/store/.../bin/tool` to keep paths absolute and NixOS-neutral. Context recovery offers every accepted word grouped by what it does today: keep-side values (keep, carry, handoff, prompt, full, all, continue, resume, checkpoint, queryable) and reset-side values (reset, none, fresh, clear, drop, new). Several words currently map to the same keep or reset behavior and the option labels say so. Results are edited with form, required, `required-by`, and `extensions`; an `""` extensions line declares the empty-string extension that matches files without any extension. Result IDs, `required-by` references, dependency cycles, argument declarations, hook argv, and secret reference syntax are validated before writing.
+Inline `[[toolkits.operations]]` are edited with executable, arguments, and model-facing arguments. The executable is a separate field and is resolved on the worker's `PATH` when it is a bare name; the arguments field contains one argument per line and does not repeat the executable. Argument rows carry the type (string, number, integer, boolean, enum, path, file, directory), a required YES/NO flag, and for `enum` the accepted values. Lifecycle hooks use the same fixed-operation schema without model-facing arguments. Context recovery offers every accepted word grouped by what it does today: keep-side values (keep, carry, handoff, prompt, full, all, continue, resume, checkpoint, queryable) and reset-side values (reset, none, fresh, clear, drop, new). Several words currently map to the same keep or reset behavior and the option labels say so. Results are edited with form, required YES/NO, `required-by`, and `extensions`; an `""` extensions line declares the empty-string extension that matches files without any extension. Result IDs, `required-by` references, dependency cycles, argument declarations, hook arguments, and secret reference syntax are validated before writing.
 
 Structured saves apply edits to the parsed TOML document. Comments, key order, and keys the form does not cover are kept; fields changed through the form are written in normalized TOML. A blank model name is written as `"default"`. Unsaved source and structured changes survive reload broadcasts. Switching definitions asks before discarding, and RELOAD discards them.
 
@@ -127,14 +133,14 @@ Supported cron forms are `*`, a number, `a-b`, `*/n`, `a-b/n`, and comma-separat
 
 #### Lifecycle hooks
 
-`[[lifecycle.init]]` and `[[lifecycle.finalize]]` use the fixed-operation schema with two restrictions: model-facing arguments cannot be declared or referenced, and the executable must be an absolute path.
+`[[lifecycle.init]]` and `[[lifecycle.finalize]]` use the fixed-operation schema with one restriction: model-facing arguments cannot be declared or referenced.
 
 | Key | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `name` | string | yes | Hook name, `[A-Za-z0-9_-]{1,64}`. |
 | `description` | string | no | Recorded description. |
-| `executable` | string | no | Absolute executable path. When omitted, `argv[0]` is the executable. |
-| `argv` | array of strings | yes | Arguments. May be empty when `executable` is set. When `executable` is omitted, `argv` must be non-empty and `argv[0]` must be absolute. |
+| `executable` | string | no | Executable name or absolute path. Bare names resolve on the worker's `PATH` at execution time. When omitted, `argv[0]` is the executable. |
+| `argv` | array of strings | yes | Arguments, excluding the executable when `executable` is set. May be empty when `executable` is set. When `executable` is omitted, `argv` must be non-empty and `argv[0]` names the executable, either bare or absolute. |
 
 Hooks run without a shell as fixed operations inside the agent worker, with the workspace as the working directory when one exists. The manager relays the execute request over the worker protocol and never spawns hook processes itself, so hooks can create files in the agent-owned workspace across the manager/worker UID boundary. Init hooks run after the worker is ready. Finalize hooks run while the worker still exists, before the stop that ends the agent; a failed start also runs finalize hooks for cleanup before the worker is torn down. Because finalize runs before the terminal transition, `{%run_state}` in a finalize hook still names the run's live state. Hook argv supports fixed variables only. A failing init hook fails the start. A failing finalize hook is reported as a `hook_failed` event and does not undo the completed, failed, or stopped run.
 
@@ -198,15 +204,15 @@ Compaction is enabled when `threshold` is greater than zero. After a model respo
 | --- | --- | --- | --- | --- |
 | `enabled` | boolean | no | `true` | When `false`, the agent gets no workspace: none is allocated, `{%workspace}` is unavailable, and definitions that require it — operations, hooks, or filesystem roots built on `{%workspace}`, and `file` results — fail validation. |
 
-The absent table or key keeps the workspace enabled for compatibility with existing definitions. The structured editor exposes the toggle. The result directory is unaffected by this setting and stays separate from the workspace.
+The absent table or key keeps the workspace enabled for compatibility with existing definitions. The structured editor labels this choice ALLOCATE WORKSPACE and offers YES or NO; YES is the default. The result directory is unaffected by this setting and stays separate from the workspace.
 
 ### `[teardown]`
 
-| Key | Type | Required | Values |
-| --- | --- | --- | --- |
-| `workspace` | enum | no | `retain`, `export`, `destroy` |
+| Key | Type | Required | Default | Values |
+| --- | --- | --- | --- | --- |
+| `workspace` | enum | no | `retain` | `retain`, `export`, `destroy` |
 
-The value is parsed, validated, and retained on the definition. No workspace teardown action currently consumes it.
+The value is parsed, validated, and retained on the definition. Omission behaves as `retain`, and the structured editor shows RETAIN as the concrete default. No workspace teardown action currently consumes it.
 
 ### `[budgets]`
 
@@ -339,9 +345,11 @@ A manifest may declare a native toolkit, fixed operations, or both. TOML never c
 | --- | --- | --- | --- |
 | `name` | string | yes | Tool name exposed to the model, `[A-Za-z0-9_-]{1,64}`. |
 | `description` | string | no | Tool description. Defaults to `Runs the fixed operation <name>.` when exposed to the model. |
-| `executable` | string | no | Absolute executable path. When omitted, `argv[0]` is the executable and the rest are arguments. |
-| `argv` | array of strings | yes | Arguments, or executable plus arguments. Must be non-empty when `executable` is omitted; may be empty when it is set. |
+| `executable` | string | no | Executable name or absolute path. Bare names resolve on the worker's `PATH` at execution time. When omitted, `argv[0]` is the executable and the rest are arguments. |
+| `argv` | array of strings | yes | Arguments, excluding the executable when `executable` is set. Must be non-empty when `executable` is omitted; may be empty when it is set. |
 | `arguments` | table, array of tables, or child tables | no | Model-facing argument declarations. |
+
+When `executable` is set, `argv` holds only the arguments; the executable is not repeated in that list.
 
 Each operation uses one argument-declaration form: an `arguments` table, `arguments` as an array of tables, or child tables directly under the operation.
 
@@ -382,7 +390,7 @@ Reserved operation keys are `name`, `executable`, `argv`, `arguments`, and `desc
 | --- | --- | --- | --- |
 | `type` | enum | yes | `string`, `number`, `integer`, `boolean`, `enum`, `path`, `file`, or `directory`. |
 | `values` | array of strings | enum only | Non-empty list of accepted values. Rejected for other types. |
-| `required` | boolean | no | Defaults to whether the argument appears as `{name}` in `argv`. An explicit value wins. |
+| `required` | boolean | no | Defaults to whether the argument appears as `{name}` in `argv`. An explicit value wins. The structured editor shows the resolved default as YES or NO. |
 
 Argument names must match `[A-Za-z_][A-Za-z0-9_-]*`. At call time unknown arguments and missing required arguments are rejected. `integer` arguments must be integers; `number` arguments must be numbers; `boolean` arguments must be booleans; `enum` arguments must match `values`. `path`, `file`, and `directory` arguments are resolved relative to the agent workspace, must stay below that workspace after symlink resolution, and `~` paths are rejected. `file` and `directory` also require an existing file or directory. They are passed to argv as absolute paths.
 

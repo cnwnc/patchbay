@@ -82,7 +82,7 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
     assert content =~ ~s(name = "model-b" # keep this comment)
     assert content =~ ~s(kind = "scheduled")
     assert content =~ ~s(schedule = "0 7 * * *")
-    assert content =~ ~s(overlap = "forbid")
+    refute content =~ "overlap"
     assert content =~ "threshold = 700"
     assert content =~ "target = 300"
     assert content =~ "run-seconds = 45"
@@ -541,6 +541,7 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
     assert has_element?(view, "select[name='new_toolkit'] option[value='secret-env']")
     assert has_element?(view, "select[name='new_toolkit'] option[value='filesystem']")
     assert has_element?(view, "select[name='new_toolkit'] option[value='ops']")
+    assert has_element?(view, "select[name='new_toolkit'] option[value='']", "CUSTOM TOOLKIT")
 
     # The filesystem row lists the tools its manifest exposes.
     assert render(view) =~ "edit_file, list_directory, read_file, write_file"
@@ -647,8 +648,11 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
 
     assert has_element?(
              view,
-             "select[name='structured[toolkits][0][operations][0][arguments][0][required]'] option[value='true'][selected]"
+             "select[name='structured[toolkits][0][operations][0][arguments][0][required]'] option[value='true'][selected]",
+             "YES"
            )
+
+    assert render(view) =~ "ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)"
 
     values_text =
       view
@@ -909,7 +913,17 @@ prod"
     assert has_element?(view, "input#structured-toolkit-root-0")
     assert view |> element("label[for='structured-toolkit-root-0']") |> render() =~ "{%WORKSPACE}"
 
-    assert has_element?(view, "select#structured-workspace-enabled option[value=''][selected]")
+    assert has_element?(
+             view,
+             "select#structured-workspace-enabled option[value='enabled'][selected]",
+             "YES"
+           )
+
+    assert has_element?(
+             view,
+             "select#structured-teardown-workspace option[value='retain'][selected]",
+             "RETAIN"
+           )
 
     html =
       view
@@ -926,13 +940,14 @@ prod"
     assert {:ok, snapshot} = DefinitionRegistry.get("researcher")
     assert snapshot.definition.workspace.enabled == false
 
-    # Switching back writes the explicit enabled form.
+    # Switching back selects the concrete default and leaves it omitted.
     {:ok, view, _html} = live(conn, "/config/researcher")
     view |> element("button[phx-value-tab='structured']") |> render_click()
 
     assert has_element?(
              view,
-             "select#structured-workspace-enabled option[value='disabled'][selected]"
+             "select#structured-workspace-enabled option[value='disabled'][selected]",
+             "NO"
            )
 
     html =
@@ -945,7 +960,8 @@ prod"
     assert html =~ "Structured configuration saved"
 
     content = File.read!(path)
-    assert content =~ "enabled = true"
+    refute content =~ "enabled = false"
+    refute content =~ "enabled = true"
 
     assert {:ok, snapshot} = DefinitionRegistry.get("researcher")
     assert snapshot.definition.workspace.enabled == true
@@ -1122,11 +1138,11 @@ prod"
     html =
       render_submit(view, "save_structured", %{
         "structured" => %{
-          "lifecycle" => %{"init" => %{"0" => %{"name" => "bad", "argv" => "not/absolute"}}}
+          "lifecycle" => %{"init" => %{"0" => %{"name" => "bad", "argv" => ""}}}
         }
       })
 
-    assert html =~ "argv must start with an absolute path"
+    assert html =~ "requires arguments when no executable is set"
 
     html =
       render_submit(view, "save_structured", %{
