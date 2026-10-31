@@ -616,6 +616,330 @@ defmodule Patchbay.Toolkit.Native.FilesystemTest do
     end
   end
 
+  describe "variable roots" do
+    test "roots may interpolate fixed variables and unknown ones fail early" do
+      assert :ok = Filesystem.validate_config(%{"root" => "{%workspace}"}, nil)
+      assert :ok = Filesystem.validate_config(%{"root" => "{%workspace}/logs"}, nil)
+      assert :ok = Filesystem.validate_config(%{"root" => "work-{%agent_id}"}, nil)
+
+      assert {:error, "uses unsupported fixed variable {%cargo_cult}"} =
+               Filesystem.validate_config(%{"root" => "{%cargo_cult}"}, nil)
+    end
+
+    test "shell-style ${%workspace} roots are rejected rather than left literal", %{
+      config_root: config_root
+    } do
+      assert {:error, message} =
+               Filesystem.validate_config(%{"root" => "${%workspace}"}, config_root)
+
+      assert message =~ "shell-style"
+
+      agent_dir =
+        write_agent(
+          config_root,
+          "alpha",
+          """
+          [[toolkits]]
+          toolkit = "filesystem"
+
+          [toolkits.config]
+          root = "${%workspace}"
+          """
+        )
+
+      assert {:error, %Definition.Error{errors: errors}} = Definition.load(agent_dir)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["toolkits", 0, "config", "root"] and issue.message =~ "shell-style"
+             end)
+    end
+
+    test "a root that is exactly {%workspace} roots tools at the rendered workspace", %{
+      base: base,
+      config_root: config_root
+    } do
+      workspace = Path.join(base, "agent-workspace")
+      File.mkdir_p!(workspace)
+
+      context =
+        config_root
+        |> context("{%workspace}")
+        |> Map.put(:variables, %{"workspace" => workspace})
+
+      assert {:ok, %{status: :ok, bytes: 6}} =
+               Filesystem.execute(
+                 "write_file",
+                 %{"path" => "deep/nested/a.txt", "content" => "sailor"},
+                 context
+               )
+
+      assert File.read!(Path.join([workspace, "deep/nested/a.txt"])) == "sailor"
+
+      assert {:ok, %{output: "sailor"}} =
+               Filesystem.execute("read_file", %{"path" => "deep/nested/a.txt"}, context)
+
+      assert {:error, {:path_traversal_not_allowed, "../" <> _rest}} =
+               Filesystem.execute(
+                 "write_file",
+                 %{"path" => "../escape.txt", "content" => "no"},
+                 context
+               )
+    end
+
+    test "an interpolated root renders from the full variable map", %{
+      base: base,
+      config_root: config_root
+    } do
+      workspace = Path.join(base, "agent-workspace")
+      File.mkdir_p!(Path.join(workspace, "running"))
+
+      context =
+        config_root
+        |> context("{%workspace}/{%agent_state}")
+        |> Map.merge(%{
+          variables: %{"workspace" => workspace, "agent_state" => "running"}
+        })
+
+      assert {:ok, %{status: :ok}} =
+               Filesystem.execute(
+                 "write_file",
+                 %{"path" => "proof.txt", "content" => "yes"},
+                 context
+               )
+
+      assert File.read!(Path.join([workspace, "running/proof.txt"])) == "yes"
+    end
+
+    test "a relative root produced by rendering resolves under the config root", %{
+      config_root: config_root
+    } do
+      File.mkdir_p!(Path.join(config_root, "work-alpha"))
+
+      context =
+        config_root
+        |> context("work-{%agent_id}")
+        |> Map.put(:variables, %{"agent_id" => "alpha"})
+
+      assert {:ok, %{status: :ok}} =
+               Filesystem.execute(
+                 "write_file",
+                 %{"path" => "a.txt", "content" => "confined"},
+                 context
+               )
+
+      assert File.read!(Path.join([config_root, "work-alpha/a.txt"])) == "confined"
+    end
+
+    test "an unavailable root variable is reported instead of guessing a base", %{
+      config_root: config_root
+    } do
+      context = context(config_root, "{%workspace}")
+
+      assert {:error, {:root_variable_unavailable, "workspace"}} =
+               Filesystem.execute("write_file", %{"path" => "a.txt", "content" => "no"}, context)
+    end
+
+    test "a disabled workspace rejects roots and operations that require {%workspace}", %{
+      config_root: config_root
+    } do
+      echo = System.find_executable("echo")
+
+      agent_dir =
+        write_agent(
+          config_root,
+          "alpha",
+          """
+          [workspace]
+          enabled = false
+
+          [[toolkits]]
+          toolkit = "filesystem"
+
+          [toolkits.config]
+          root = "{%workspace}"
+
+          [[lifecycle.init]]
+          name = "whistle"
+          executable = "#{echo}"
+          argv = ["{%workspace}"]
+
+          [[results]]
+          id = "file-out"
+          label = "Out"
+          form = "file"
+          """
+        )
+
+      assert {:error, %Definition.Error{errors: errors}} = Definition.load(agent_dir)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["toolkits", 0, "config", "root"] and
+                 issue.message =~ "requires the {%workspace} variable"
+             end)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["lifecycle", "init", 0, "argv"] and
+                 issue.message =~ "[workspace] enabled is false"
+             end)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["results", 0, "form"] and
+                 issue.message =~ "[workspace] enabled is false"
+             end)
+    end
+
+    test "a disabled workspace rejects operation argv that requires {%workspace}" do
+      echo = System.find_executable("echo")
+
+      assert {:error, %Definition.Error{errors: errors}} =
+               Definition.parse("""
+               format-version = 1
+               id = "alpha"
+
+               [model]
+               name = "m"
+
+               [lifecycle]
+               kind = "one-shot"
+
+               [workspace]
+               enabled = false
+
+               [[toolkits]]
+               toolkit = "shell"
+
+               [[toolkits.operations]]
+               name = "touch"
+               executable = "#{echo}"
+               argv = ["{%workspace}"]
+               """)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["toolkits", 0, "operations", 0, "argv"] and
+                 issue.message =~ "[workspace] enabled is false"
+             end)
+    end
+  end
+
+  describe "worker execution" do
+    test "the manager request renders variables without touching the agent tree", %{
+      base: base,
+      config_root: config_root
+    } do
+      workspace = Path.join(base, "agent-workspace")
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "a.txt"), "hello")
+
+      context =
+        config_root
+        |> context("{%workspace}")
+        |> Map.put(:variables, %{"workspace" => workspace})
+
+      # Cross-UID stand-in: the manager cannot traverse the root. Building the
+      # request must stay lexical, because the worker owns the tree.
+      File.chmod!(workspace, 0o000)
+      on_exit(fn -> File.chmod!(workspace, 0o755) end)
+
+      assert {:ok, %{"request" => encoded}} =
+               Filesystem.worker_request("read_file", %{"path" => "a.txt"}, context)
+
+      assert {:ok, request} = Patchbay.Provider.JSON.decode(encoded)
+      assert request["tool"] == "read_file"
+      assert request["config"]["root"] == workspace
+      assert request["arguments"] == %{"path" => "a.txt"}
+      assert request["variables"]["workspace"] == workspace
+      assert request["config_root"] == config_root
+      assert is_list(request["protected"]["protected_roots"])
+    end
+
+    test "the worker runs a request in its root and returns the result", %{
+      config_root: config_root,
+      work_root: work_root
+    } do
+      context = context(config_root, "agents/alpha/work")
+
+      assert {:ok, %{"request" => encoded}} =
+               Filesystem.worker_request(
+                 "write_file",
+                 %{"path" => "notes/a.txt", "content" => "hi"},
+                 context
+               )
+
+      assert {:ok, reply} = Filesystem.worker_execute(%{"request" => encoded})
+
+      assert {:ok, %{status: :ok, output: "wrote 2 bytes to notes/a.txt\n", bytes: 2}} =
+               Filesystem.worker_result({:ok, reply})
+
+      assert File.read!(Path.join(work_root, "notes/a.txt")) == "hi"
+    end
+
+    test "confinement errors survive the worker boundary", %{
+      base: base,
+      config_root: config_root,
+      work_root: work_root
+    } do
+      context = context(config_root, "agents/alpha/work")
+      File.ln_s!(base, Path.join(work_root, "leak"))
+
+      assert {:error, {:path_traversal_not_allowed, "../escape.txt"}} =
+               worker_call(context, "read_file", %{"path" => "../escape.txt"})
+
+      assert {:error, {:absolute_path_not_allowed, _path}} =
+               worker_call(context, "read_file", %{"path" => Path.join(base, "a.txt")})
+
+      assert {:error, {:path_escapes_root, _link}} =
+               worker_call(context, "read_file", %{"path" => "leak/a.txt"})
+    end
+
+    test "the worker refuses a protected root even when a request names one", %{
+      base: base,
+      config_root: config_root
+    } do
+      state_dir = Path.join(base, "manager-state")
+      File.mkdir_p!(state_dir)
+
+      context =
+        config_root
+        |> context(state_dir)
+        |> Map.put(:state_dir, state_dir)
+
+      assert {:error, {:root_protected, ^state_dir, _protected}} =
+               Filesystem.worker_request("read_file", %{"path" => "x"}, context)
+
+      forged = %{
+        "tool" => "read_file",
+        "arguments" => %{"path" => "x"},
+        "config" => %{"root" => state_dir},
+        "variables" => %{},
+        "config_root" => config_root,
+        "protected" => %{"state_dir" => state_dir, "protected_roots" => [state_dir]}
+      }
+
+      assert {:ok, encoded} = Patchbay.Provider.JSON.encode(forged)
+      assert {:ok, reply} = Filesystem.worker_execute(%{"request" => encoded})
+
+      assert {:error, {:root_protected, ^state_dir, _protected}} =
+               Filesystem.worker_result({:ok, reply})
+    end
+
+    test "the reserved operation name cannot be declared by a definition" do
+      assert Filesystem.worker_operation() == "patchbay-filesystem"
+
+      assert {:error, {:reserved_operation_name, "patchbay-filesystem"}} =
+               Patchbay.Worker.Operations.validate([
+                 %{name: "patchbay-filesystem", argv: ["/bin/echo", "x"]}
+               ])
+    end
+
+    defp worker_call(context, tool, arguments) do
+      assert {:ok, %{"request" => encoded}} =
+               Filesystem.worker_request(tool, arguments, context)
+
+      assert {:ok, reply} = Filesystem.worker_execute(%{"request" => encoded})
+      Filesystem.worker_result({:ok, reply})
+    end
+  end
+
   defp write_agent(config_root, id, toolkit_body) do
     agent_dir = Path.join([config_root, "agents", id])
     File.mkdir_p!(agent_dir)

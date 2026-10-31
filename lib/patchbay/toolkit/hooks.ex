@@ -1,111 +1,104 @@
 defmodule Patchbay.Toolkit.Hooks do
   @moduledoc """
-  Expands and runs lifecycle init/finalize hooks.
+  Declares lifecycle init/finalize hooks and how they reach the agent worker.
 
   Hooks are fixed argv operations declared under `[[lifecycle.init]]` or
-  `[[lifecycle.finalize]]`. They may reference fixed variables only. Execution
-  uses the same argv rendering rules as fixed operations and never goes
-  through a shell.
+  `[[lifecycle.finalize]]`. They may reference fixed variables only. They run
+  inside the agent's worker as fixed operations, using the worker protocol:
+  the worker owns the agent workspace across the UID boundary, so a hook can
+  create files there while the manager cannot. The worker renders hook argv
+  with the variable map supplied per execution and runs with the workspace as
+  the working directory when one exists. Execution never goes through a shell.
   """
 
   alias Patchbay.Definition.Toolkit.Operation
-  alias Patchbay.Toolkit.Variables
-  alias Patchbay.Worker.Exec
 
-  @type expanded :: %{name: String.t() | nil, executable: String.t(), argv: [String.t()]}
-  @type outcome :: {String.t() | nil, {:ok, Exec.result()} | {:error, term()}}
+  @worker_prefix "patchbay-lifecycle-"
+  @phases [:init, :finalize]
+
+  @type phase :: :init | :finalize
+
+  @type entry :: %{
+          required(:declared) => String.t() | nil,
+          required(:worker_name) => String.t(),
+          required(:argv) => [String.t()],
+          optional(:executable) => String.t()
+        }
+
+  @type plan :: %{
+          required(:init) => [entry()],
+          required(:finalize) => [entry()],
+          required(:operations) => [map()]
+        }
 
   @doc "Returns the declared hooks for `:init` or `:finalize`."
-  @spec hooks(map() | nil, :init | :finalize) :: [Operation.t()]
+  @spec hooks(map() | nil, phase()) :: [Operation.t()]
   def hooks(nil, _phase), do: []
-  def hooks(lifecycle, phase) when phase in [:init, :finalize], do: Map.get(lifecycle, phase, [])
+  def hooks(lifecycle, phase) when phase in @phases, do: Map.get(lifecycle, phase, [])
 
-  @doc "Renders hook argv with the supplied fixed variables."
-  @spec expand(map() | nil, :init | :finalize, map()) ::
-          {:ok, [expanded()]} | {:error, {String.t() | nil, term()}}
-  def expand(lifecycle, phase, variables) do
-    lifecycle
-    |> hooks(phase)
-    |> Enum.reduce_while({:ok, []}, fn operation, {:ok, acc} ->
-      case expand_hook(operation, variables) do
-        {:ok, hook} -> {:cont, {:ok, [hook | acc]}}
-        {:error, reason} -> {:halt, {:error, {Map.get(operation, :name), reason}}}
-      end
-    end)
-    |> case do
-      {:ok, hooks} -> {:ok, Enum.reverse(hooks)}
-      error -> error
-    end
+  @doc """
+  One plan entry per declared hook, in declaration order, for both phases.
+
+  `reserved` must list every operation name already declared for the agent;
+  synthesized names never collide with one. Planning the same lifecycle and
+  reserved list yields the same names, so the operations sent at worker start
+  and the operations executed later stay in sync.
+  """
+  @spec plan(map() | nil, [String.t()]) :: plan()
+  def plan(lifecycle, reserved \\ []) do
+    {entries, _reserved} =
+      @phases
+      |> Enum.reduce({%{}, MapSet.new(List.wrap(reserved))}, fn phase, {entries, reserved} ->
+        {phase_entries, reserved} = plan_entries(hooks(lifecycle, phase), phase, reserved)
+        {Map.put(entries, phase, phase_entries), reserved}
+      end)
+
+    %{
+      init: Map.fetch!(entries, :init),
+      finalize: Map.fetch!(entries, :finalize),
+      operations: Enum.flat_map(@phases, &worker_operations(Map.fetch!(entries, &1)))
+    }
   end
 
-  @doc "Runs every declared hook, reporting one outcome per hook."
-  @spec run(map() | nil, :init | :finalize, map(), keyword()) :: [outcome()]
-  def run(lifecycle, phase, variables, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 30_000)
-    max_output_bytes = Keyword.get(opts, :max_output_bytes, 262_144)
-    cd = variables["workspace"]
+  defp plan_entries(operations, phase, reserved) do
+    operations
+    |> Enum.with_index()
+    |> Enum.reduce({[], reserved}, fn {operation, index}, {entries, reserved} ->
+      name = unique_name("#{@worker_prefix}#{phase}-#{index}", reserved)
+      reserved = MapSet.put(reserved, name)
 
-    lifecycle
-    |> hooks(phase)
-    |> Enum.map(fn operation ->
-      name = Map.get(operation, :name)
+      entry = %{declared: Map.get(operation, :name), worker_name: name, argv: argv(operation)}
 
-      outcome =
-        with {:ok, hook} <- expand_hook(operation, variables),
-             exec_opts <- [timeout: timeout, max_output_bytes: max_output_bytes] ++ cd_option(cd),
-             {:ok, result} <- Exec.run(hook.executable, hook.argv, exec_opts) do
-          if result.exit_status == 0 do
-            {:ok, result}
-          else
-            {:error, {:exit_status, result.exit_status, result.output}}
-          end
+      entry =
+        case Map.get(operation, :executable) do
+          nil -> entry
+          executable -> Map.put(entry, :executable, executable)
         end
 
-      {name, outcome}
+      {[entry | entries], reserved}
     end)
+    |> then(fn {entries, reserved} -> {Enum.reverse(entries), reserved} end)
   end
 
-  @doc "Runs one expanded hook."
-  @spec execute(expanded(), keyword()) :: {:ok, Exec.result()} | {:error, term()}
-  def execute(%{executable: executable, argv: argv}, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 30_000)
-    max_output_bytes = Keyword.get(opts, :max_output_bytes, 262_144)
-    cd = Keyword.get(opts, :cd)
+  defp argv(%Operation{argv: argv}) when is_list(argv), do: argv
+  defp argv(_operation), do: []
 
-    exec_opts =
-      [timeout: timeout, max_output_bytes: max_output_bytes] ++ cd_option(cd)
-
-    case Exec.run(executable, argv, exec_opts) do
-      {:ok, result} ->
-        if result.exit_status == 0 do
-          {:ok, result}
-        else
-          {:error, {:exit_status, result.exit_status, result.output}}
-        end
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp expand_hook(%Operation{} = operation, variables) do
-    {executable, args} =
-      case operation.executable do
-        nil -> {List.first(operation.argv), Enum.drop(operation.argv, 1)}
-        executable -> {executable, operation.argv}
-      end
-
-    with true <- is_binary(executable) and Path.type(executable) == :absolute,
-         {:ok, argv} <- Variables.render_argv(args, variables, %{}) do
-      {:ok, %{name: operation.name, executable: executable, argv: argv}}
+  defp unique_name(candidate, reserved) do
+    if MapSet.member?(reserved, candidate) do
+      unique_name("#{candidate}-2", reserved)
     else
-      false -> {:error, :invalid_executable}
-      {:error, reason} -> {:error, reason}
+      candidate
     end
   end
 
-  defp expand_hook(_operation, _variables), do: {:error, :invalid_hook}
+  defp worker_operations(entries) do
+    Enum.map(entries, fn entry ->
+      operation = %{name: entry.worker_name, argv: entry.argv}
 
-  defp cd_option(nil), do: []
-  defp cd_option(cd) when is_binary(cd), do: [cd: cd]
+      case Map.get(entry, :executable) do
+        nil -> operation
+        executable -> Map.put(operation, :executable, executable)
+      end
+    end)
+  end
 end

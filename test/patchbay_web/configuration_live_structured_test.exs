@@ -879,6 +879,78 @@ prod"
     assert snapshot.definition.teardown.workspace == :export
   end
 
+  test "the workspace toggle roundtrips and defaults to enabled", %{
+    conn: conn,
+    path: path
+  } do
+    File.write!(path, """
+    format-version = 1
+    id = "researcher"
+
+    [model]
+    name = "model-a"
+
+    [lifecycle]
+    kind = "perpetual"
+
+    [[toolkits]]
+    toolkit = "filesystem"
+
+    [toolkits.config]
+    root = "work"
+    """)
+
+    assert {:ok, _report} = DefinitionRegistry.reload()
+
+    {:ok, view, _html} = live(conn, "/config/researcher")
+    view |> element("button[phx-value-tab='structured']") |> render_click()
+
+    # The filesystem root field advertises variable support.
+    assert has_element?(view, "input#structured-toolkit-root-0")
+    assert view |> element("label[for='structured-toolkit-root-0']") |> render() =~ "{%WORKSPACE}"
+
+    assert has_element?(view, "select#structured-workspace-enabled option[value=''][selected]")
+
+    html =
+      view
+      |> form("#structured-form", %{
+        "structured" => %{"workspace" => %{"enabled" => "disabled"}}
+      })
+      |> render_submit()
+
+    assert html =~ "Structured configuration saved"
+
+    content = File.read!(path)
+    assert content =~ "enabled = false"
+
+    assert {:ok, snapshot} = DefinitionRegistry.get("researcher")
+    assert snapshot.definition.workspace.enabled == false
+
+    # Switching back writes the explicit enabled form.
+    {:ok, view, _html} = live(conn, "/config/researcher")
+    view |> element("button[phx-value-tab='structured']") |> render_click()
+
+    assert has_element?(
+             view,
+             "select#structured-workspace-enabled option[value='disabled'][selected]"
+           )
+
+    html =
+      view
+      |> form("#structured-form", %{
+        "structured" => %{"workspace" => %{"enabled" => "enabled"}}
+      })
+      |> render_submit()
+
+    assert html =~ "Structured configuration saved"
+
+    content = File.read!(path)
+    assert content =~ "enabled = true"
+
+    assert {:ok, snapshot} = DefinitionRegistry.get("researcher")
+    assert snapshot.definition.workspace.enabled == true
+  end
+
   test "a definition with every practical option keeps uncovered keys and comments", %{
     conn: conn,
     path: path

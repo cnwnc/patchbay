@@ -69,6 +69,15 @@ defmodule Patchbay.Config.Structured do
   @spec workspace_actions() :: [String.t()]
   def workspace_actions, do: @workspace_actions
 
+  @doc """
+  `[workspace] enabled` states the workspace section edits.
+
+  Blank means the key is absent, which stays enabled for compatibility with
+  existing definitions.
+  """
+  @spec workspace_states() :: [String.t()]
+  def workspace_states, do: ["", "enabled", "disabled"]
+
   @spec load(String.t(), Path.t() | nil, String.t()) ::
           {:ok, %{document: Document.t(), form: form()}} | {:error, String.t()}
   def load(source, config_dir, id) when is_binary(source) do
@@ -174,6 +183,7 @@ defmodule Patchbay.Config.Structured do
       "lifecycle" => section(params, current, "lifecycle", &lifecycle_from_params/2),
       "context" => section(params, current, "context", &context_from_params/2),
       "environment" => section(params, current, "environment", &environment_from_params/2),
+      "workspace" => section(params, current, "workspace", &workspace_from_params/2),
       "teardown" => section(params, current, "teardown", &teardown_from_params/2),
       "budgets" => section(params, current, "budgets", &budgets_from_params/2),
       "toolkits" => toolkits_from_params(params["toolkits"], current["toolkits"], current),
@@ -312,6 +322,7 @@ defmodule Patchbay.Config.Structured do
              ["target", "Target"]
            ]),
          :ok <- validate_environment(form["environment"]),
+         :ok <- validate_workspace(form["workspace"]),
          :ok <- validate_teardown(form["teardown"]),
          :ok <-
            validate_numbers(form["budgets"], "Budget", [
@@ -365,6 +376,7 @@ defmodule Patchbay.Config.Structured do
         "target" => integer_string(context["target"])
       },
       "environment" => %{"packages" => list_text(environment["packages"])},
+      "workspace" => %{"enabled" => enabled_text(table(data["workspace"])["enabled"])},
       "teardown" => %{"workspace" => string(teardown["workspace"])},
       "budgets" => %{
         "run_seconds" => integer_string(budgets["run-seconds"]),
@@ -400,6 +412,7 @@ defmodule Patchbay.Config.Structured do
         "target" => ""
       },
       "environment" => %{"packages" => ""},
+      "workspace" => %{"enabled" => ""},
       "teardown" => %{"workspace" => ""},
       "budgets" => %{"run_seconds" => "", "tokens" => ""},
       "toolkits" => [],
@@ -486,6 +499,10 @@ defmodule Patchbay.Config.Structured do
 
   defp environment_from_params(params, current) do
     %{"packages" => text_value(params, current, "packages")}
+  end
+
+  defp workspace_from_params(params, current) do
+    %{"enabled" => text_value(params, current, "enabled")}
   end
 
   defp teardown_from_params(params, current) do
@@ -1042,6 +1059,22 @@ defmodule Patchbay.Config.Structured do
     end
   end
 
+  defp validate_workspace(workspace) do
+    value = String.trim(string(workspace["enabled"]))
+
+    if value in ["", "enabled", "disabled"] do
+      :ok
+    else
+      {:error, "Workspace enabled must be empty, enabled, or disabled."}
+    end
+  end
+
+  defp enabled_text(nil), do: ""
+  defp enabled_text(true), do: "enabled"
+  defp enabled_text(false), do: "disabled"
+  defp enabled_text(value) when is_binary(value), do: string(value)
+  defp enabled_text(_value), do: ""
+
   defp validate_numbers(section, label, fields) do
     Enum.reduce_while(fields, :ok, fn [key, name], :ok ->
       case non_negative_integer(section[key]) do
@@ -1404,6 +1437,7 @@ defmodule Patchbay.Config.Structured do
          {:ok, document} <- apply_hooks(document, form["lifecycle"]),
          {:ok, document} <- apply_context(document, form["context"]),
          {:ok, document} <- apply_environment(document, form["environment"]),
+         {:ok, document} <- apply_workspace(document, form["workspace"]),
          {:ok, document} <- apply_teardown(document, form["teardown"]),
          {:ok, document} <- apply_budgets(document, form["budgets"]),
          {:ok, document} <- apply_toolkits(document, form["toolkits"] || [], config_dir),
@@ -1514,6 +1548,17 @@ defmodule Patchbay.Config.Structured do
 
   defp apply_environment(document, environment) do
     put_list(document, ["environment", "packages"], value_lines(environment["packages"]))
+  end
+
+  # A blank state keeps the key absent, so older definitions stay enabled
+  # without being rewritten on every save.
+  defp apply_workspace(document, workspace) do
+    case String.trim(string(workspace["enabled"])) do
+      "" -> delete(document, ["workspace", "enabled"])
+      "disabled" -> Document.put(document, ["workspace", "enabled"], false)
+      "enabled" -> Document.put(document, ["workspace", "enabled"], true)
+      _other -> {:error, "Workspace enabled must be empty, enabled, or disabled."}
+    end
   end
 
   defp apply_teardown(document, teardown) do

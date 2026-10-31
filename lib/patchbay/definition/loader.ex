@@ -5,10 +5,12 @@ defmodule Patchbay.Definition.Loader do
   alias Patchbay.Definition.Error
   alias Patchbay.Definition.Parse
   alias Patchbay.Definition.Prompt
+  alias Patchbay.Definition.Workspace
   alias Patchbay.Toolkit.Manifest
   alias Patchbay.Toolkit.Native.Filesystem
   alias Patchbay.Toolkit.Native.PersonalMemory
   alias Patchbay.Toolkit.Native.SecretEnv
+  alias Patchbay.Toolkit.Variables
 
   @type option ::
           {:config_root, Path.t()}
@@ -46,6 +48,7 @@ defmodule Patchbay.Definition.Loader do
               agent_scripts: assets.agent_scripts
           }
 
+          errors = validate_workspace_usage(agent, errors)
           finish(agent, errors)
       end
     else
@@ -81,12 +84,111 @@ defmodule Patchbay.Definition.Loader do
               toolkits: toolkits
           }
 
+          errors = validate_workspace_usage(agent, errors)
           finish(agent, errors)
       end
     else
       {:error, %Error{} = error} -> {:error, error}
     end
   end
+
+  # An agent without a workspace cannot satisfy anything that requires one.
+  # Definitions are rejected up front rather than at run time: `{%workspace}`
+  # renders as unavailable, so an operation, hook, result, or filesystem root
+  # built on it could never succeed.
+  defp validate_workspace_usage(agent, errors) do
+    if Workspace.enabled?(agent) do
+      errors
+    else
+      errors
+      |> reject_workspace_toolkits(agent.toolkits)
+      |> reject_workspace_hooks(Map.get(agent, :lifecycle) || %{})
+      |> reject_workspace_results(Map.get(agent, :results) || [])
+    end
+  end
+
+  defp reject_workspace_toolkits(errors, toolkits) do
+    toolkits
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {toolkit, index}, errors ->
+      errors
+      |> reject_workspace_operations(toolkit, ["toolkits", index])
+      |> reject_workspace_root(toolkit, index)
+    end)
+  end
+
+  defp reject_workspace_operations(errors, toolkit, toolkits_path) do
+    operations = Map.get(toolkit, :operations) || []
+
+    operations
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {operation, index}, errors ->
+      if workspace_used?(Map.get(operation, :argv)),
+        do:
+          Parse.error(
+            errors,
+            toolkits_path ++ ["operations", index, "argv"],
+            "requires the {%workspace} variable, but [workspace] enabled is false"
+          ),
+        else: errors
+    end)
+  end
+
+  defp reject_workspace_root(errors, toolkit, index) do
+    config = Map.get(toolkit, :config)
+
+    if Map.get(toolkit, :native) == "filesystem" and is_map(config) and
+         workspace_used?([Map.get(config, "root")]) do
+      Parse.error(
+        errors,
+        ["toolkits", index, "config", "root"],
+        "requires the {%workspace} variable, but [workspace] enabled is false"
+      )
+    else
+      errors
+    end
+  end
+
+  defp reject_workspace_hooks(errors, lifecycle) do
+    Enum.reduce([{:init, "init"}, {:finalize, "finalize"}], errors, fn {field, phase}, errors ->
+      hooks = Map.get(lifecycle, field) || []
+
+      hooks
+      |> Enum.with_index()
+      |> Enum.reduce(errors, fn {hook, index}, errors ->
+        if workspace_used?(Map.get(hook, :argv)),
+          do:
+            Parse.error(
+              errors,
+              ["lifecycle", phase, index, "argv"],
+              "requires the {%workspace} variable, but [workspace] enabled is false"
+            ),
+          else: errors
+      end)
+    end)
+  end
+
+  defp reject_workspace_results(errors, results) do
+    results
+    |> Enum.with_index()
+    |> Enum.reduce(errors, fn {result, index}, errors ->
+      if Map.get(result, :form) == :file do
+        Parse.error(
+          errors,
+          ["results", index, "form"],
+          "form file resolves inside the agent workspace, but [workspace] enabled is false"
+        )
+      else
+        errors
+      end
+    end)
+  end
+
+  defp workspace_used?(argv) when is_list(argv) do
+    "workspace" in Variables.referenced_variables(argv)
+  end
+
+  defp workspace_used?(_argv), do: false
 
   defp finish(nil, errors) do
     {:error, %Error{errors: Enum.reverse(errors)}}

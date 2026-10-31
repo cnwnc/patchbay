@@ -24,5 +24,15 @@ defmodule Patchbay.Toolkit.Native do
   @callback tools(context()) :: [tool()]
   @callback execute(String.t(), map(), context()) :: {:ok, map()} | {:error, term()}
 
-  @optional_callbacks tools: 1
+  # A module exporting these runs its tools in the agent worker. The request
+  # must fit the worker wire format, and the result is decoded back in the
+  # manager.
+  @callback worker_operation() :: String.t()
+  @callback worker_request(String.t(), map(), context()) :: {:ok, map()} | {:error, term()}
+  @callback worker_result(term()) :: {:ok, map()} | {:error, term()}
+
+  @optional_callbacks tools: 1,
+                      worker_operation: 0,
+                      worker_request: 3,
+                      worker_result: 1
 end

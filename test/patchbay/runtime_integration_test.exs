@@ -151,6 +151,324 @@ defmodule Patchbay.RuntimeIntegrationTest do
     assert eventually(fn -> WorkerSupervisor.list_workers(supervisor) == [] end, 10_000)
   end
 
+  test "lifecycle hooks run inside the agent worker and write its workspace", context do
+    sh = System.find_executable("sh")
+
+    definition = hook_definition(context, "hook-agent", sh)
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+    on_exit(fn -> safe_stop(manager) end)
+
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+
+    {:ok, runtime} =
+      Runtime.start_link(
+        definitions: %{"hook-agent" => definition},
+        state_dir: context.state_dir,
+        workspace_dir: Path.join(context.tmp, "workspaces"),
+        result_dir: Path.join(context.tmp, "results"),
+        manager: manager
+      )
+
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, "hook-agent", timeout: 10_000, await_timeout: 20_000)
+
+    workspace = Path.join([context.tmp, "workspaces", "hook-agent"])
+
+    # The init hook created the file through the worker, including the
+    # leading directories, which the manager UID cannot do cross-UID.
+    assert File.read!(Path.join(workspace, "run/deep/nested/proof.txt")) == "worker-written\n"
+
+    # The hook ran inside the worker: only worker-spawned children see the
+    # worker instance environment the supervisor injects.
+    instance = String.trim(File.read!(Path.join(workspace, "worker-instance.txt")))
+    assert byte_size(instance) > 0
+
+    assert {:ok, stopped} = Runtime.stop_agent(runtime, "hook-agent")
+    assert stopped.status == :stopped
+
+    # Finalize hooks run before the worker is stopped, so they can still
+    # write agent-owned files through the worker.
+    assert File.read!(Path.join(workspace, "finalized.txt")) == "done\n"
+
+    assert eventually(fn -> WorkerSupervisor.list_workers(supervisor) == [] end, 10_000)
+  end
+
+  test "a disabled workspace starts a worker without a workspace directory", context do
+    echo = System.find_executable("echo")
+    id = "workspace-off"
+
+    config_root = Path.join(context.tmp, "config")
+    agent_dir = Path.join([config_root, "agents", id])
+    File.mkdir_p!(agent_dir)
+
+    toolkit_dir = Path.join(config_root, "toolkits")
+    File.mkdir_p!(toolkit_dir)
+
+    File.write!(Path.join(agent_dir, "agent.toml"), """
+    format-version = 1
+    id = "#{id}"
+
+    [model]
+    name = "test-model"
+
+    [lifecycle]
+    kind = "one-shot"
+
+    [workspace]
+    enabled = false
+
+    [[toolkits]]
+    toolkit = "probe"
+
+    [[toolkits.operations]]
+    name = "probe"
+    executable = "#{echo}"
+    argv = ["{%agent_id}"]
+    """)
+
+    File.write!(Path.join(toolkit_dir, "probe.toml"), """
+    name = "probe"
+    description = "Probe."
+
+    [[operations]]
+    name = "probe"
+    argv = ["echo", "{%agent_id}"]
+    """)
+
+    assert {:ok, definition} = Definition.load(agent_dir)
+
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+    on_exit(fn -> safe_stop(manager) end)
+
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+
+    {:ok, runtime} =
+      Runtime.start_link(
+        definitions: %{id => definition},
+        state_dir: context.state_dir,
+        workspace_dir: Path.join(context.tmp, "workspaces"),
+        result_dir: Path.join(context.tmp, "results"),
+        manager: manager
+      )
+
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    # Neither the runtime nor the supervisor allocate a workspace directory.
+    refute File.dir?(Path.join([context.tmp, "workspaces", id]))
+
+    assert {:ok, result} = Runtime.execute_tool(runtime, id, "probe", %{}, timeout: 10_000)
+    assert result.status == :ok
+    assert result.output == "#{id}\n"
+
+    assert {:ok, stopped} = Runtime.stop_agent(runtime, id)
+    assert stopped.status == :stopped
+
+    assert eventually(fn -> WorkerSupervisor.list_workers(supervisor) == [] end, 10_000)
+  end
+
+  test "a filesystem toolkit rooted at {%workspace} reads and writes through the runtime",
+       context do
+    id = "fs-root-agent"
+
+    config_root = Path.join(context.tmp, "config")
+    agent_dir = Path.join([config_root, "agents", id])
+    File.mkdir_p!(agent_dir)
+
+    File.write!(
+      Path.join(agent_dir, "agent.toml"),
+      """
+      format-version = 1
+      id = "#{id}"
+
+      [model]
+      name = "test-model"
+
+      [lifecycle]
+      kind = "one-shot"
+
+      [[toolkits]]
+      toolkit = "filesystem"
+
+      [toolkits.config]
+      root = "{%workspace}"
+      """
+    )
+
+    assert {:ok, definition} = Definition.load(agent_dir)
+
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+    on_exit(fn -> safe_stop(manager) end)
+
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+
+    {:ok, runtime} =
+      Runtime.start_link(
+        definitions: %{id => definition},
+        state_dir: context.state_dir,
+        workspace_dir: Path.join(context.tmp, "workspaces"),
+        result_dir: Path.join(context.tmp, "results"),
+        manager: manager
+      )
+
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    assert {:ok, written} =
+             Runtime.execute_tool(
+               runtime,
+               id,
+               "write_file",
+               %{"path" => "notes/a.txt", "content" => "from the model"},
+               timeout: 10_000
+             )
+
+    assert written.status == :ok
+
+    assert File.read!(Path.join([context.tmp, "workspaces", id, "notes/a.txt"])) ==
+             "from the model"
+
+    assert {:ok, read} =
+             Runtime.execute_tool(runtime, id, "read_file", %{"path" => "notes/a.txt"},
+               timeout: 10_000
+             )
+
+    assert read.output == "from the model"
+
+    assert {:error, {:path_traversal_not_allowed, "../escape.txt"}} =
+             Runtime.execute_tool(
+               runtime,
+               id,
+               "write_file",
+               %{"path" => "../escape.txt", "content" => "no"},
+               timeout: 10_000
+             )
+
+    # A link the agent planted in its own workspace still cannot lead the
+    # tool into manager-owned state: the worker resolves it and refuses.
+    File.ln_s!(context.state_dir, Path.join([context.tmp, "workspaces", id, "manager"]))
+
+    assert {:error, {:path_escapes_root, _link}} =
+             Runtime.execute_tool(runtime, id, "read_file", %{"path" => "manager/events"},
+               timeout: 10_000
+             )
+
+    assert {:ok, _stopped} = Runtime.stop_agent(runtime, id)
+  end
+
+  test "a filesystem toolkit rooted at {%result_dir} reads and writes through the runtime",
+       context do
+    id = "fs-result-agent"
+
+    config_root = Path.join(context.tmp, "config")
+    agent_dir = Path.join([config_root, "agents", id])
+    File.mkdir_p!(agent_dir)
+
+    File.write!(
+      Path.join(agent_dir, "agent.toml"),
+      """
+      format-version = 1
+      id = "#{id}"
+
+      [model]
+      name = "test-model"
+
+      [lifecycle]
+      kind = "one-shot"
+
+      [[toolkits]]
+      toolkit = "filesystem"
+
+      [toolkits.config]
+      root = "{%result_dir}"
+      """
+    )
+
+    assert {:ok, definition} = Definition.load(agent_dir)
+
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+    on_exit(fn -> safe_stop(manager) end)
+
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+
+    {:ok, runtime} =
+      Runtime.start_link(
+        definitions: %{id => definition},
+        state_dir: context.state_dir,
+        workspace_dir: Path.join(context.tmp, "workspaces"),
+        result_dir: Path.join(context.tmp, "results"),
+        manager: manager
+      )
+
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    assert {:ok, written} =
+             Runtime.execute_tool(
+               runtime,
+               id,
+               "write_file",
+               %{"path" => "report.txt", "content" => "result-owned"},
+               timeout: 10_000
+             )
+
+    assert written.status == :ok
+
+    assert File.read!(Path.join([context.tmp, "results", id, "report.txt"])) ==
+             "result-owned"
+
+    assert {:ok, read} =
+             Runtime.execute_tool(runtime, id, "read_file", %{"path" => "report.txt"},
+               timeout: 10_000
+             )
+
+    assert read.output == "result-owned"
+
+    assert {:ok, _stopped} = Runtime.stop_agent(runtime, id)
+  end
+
+  defp hook_definition(context, id, sh) do
+    config_root = Path.join(context.tmp, "config")
+    agent_dir = Path.join([config_root, "agents", id])
+    File.mkdir_p!(agent_dir)
+
+    File.write!(Path.join(agent_dir, "agent.toml"), """
+    format-version = 1
+    id = "#{id}"
+
+    [model]
+    name = "test-model"
+
+    [lifecycle]
+    kind = "one-shot"
+
+    [[lifecycle.init]]
+    name = "scratch"
+    executable = "#{sh}"
+    argv = ["-c", "mkdir -p {%workspace}/run/deep/nested && echo worker-written > {%workspace}/run/deep/nested/proof.txt && printf %s $PATCHBAY_WORKER_INSTANCE > {%workspace}/worker-instance.txt"]
+
+    [[lifecycle.finalize]]
+    name = "leave"
+    executable = "#{sh}"
+    argv = ["-c", "echo done > {%workspace}/finalized.txt"]
+    """)
+
+    assert {:ok, definition} = Definition.load(agent_dir)
+    definition
+  end
+
   defp manifest_definition(context) do
     config_root = Path.join(context.tmp, "config")
     toolkit_dir = Path.join(config_root, "toolkits")

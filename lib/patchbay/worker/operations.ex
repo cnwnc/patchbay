@@ -248,6 +248,9 @@ defmodule Patchbay.Worker.Operations do
       Patchbay.Worker.Artifacts.reserved?(name) ->
         {:error, {:reserved_operation_name, name}}
 
+      Patchbay.Worker.Native.reserved?(name) ->
+        {:error, {:reserved_operation_name, name}}
+
       true ->
         :ok
     end

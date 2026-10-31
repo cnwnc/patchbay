@@ -436,6 +436,192 @@ defmodule Patchbay.RuntimeTest do
     assert record.toolkit_id == "runtime-native"
   end
 
+  test "a filesystem call runs in the worker without manager access to the root", context do
+    workspace = Path.join([context.tmp, "workspaces", "alpha"])
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "a.txt"), "worker-owned")
+
+    # Cross-UID stand-in: the manager cannot traverse the agent-owned root.
+    # The call must still succeed because the toolkit runs in the worker.
+    File.chmod!(workspace, 0o000)
+    on_exit(fn -> File.chmod!(workspace, 0o755) end)
+
+    Manager.set(context.stub, :execute_result, fn _operation, _arguments ->
+      {:ok,
+       Patchbay.Toolkit.Native.Filesystem.worker_reply(
+         {:ok, %{status: :ok, output: "worker-owned", path: "a.txt", bytes: 12}}
+       )}
+    end)
+
+    definition = definition("alpha")
+
+    toolkits = [
+      %Patchbay.Definition.Toolkit{
+        toolkit: "filesystem",
+        native: "filesystem",
+        config: %{"root" => "{%workspace}"}
+      }
+    ]
+
+    Definitions.put(%{definition | toolkits: toolkits})
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+
+    assert {:ok, result} =
+             Runtime.execute_tool(runtime, "alpha", "read_file", %{"path" => "a.txt"})
+
+    assert result.status == :ok
+    assert result.output == "worker-owned"
+    assert result.path == "a.txt"
+
+    assert {:ok, [record]} = Runtime.tool_history(runtime, "alpha")
+    assert record.tool_name == "read_file"
+    assert record.truncated_result == "worker-owned"
+
+    {:execute, "agent.alpha", "patchbay-filesystem", %{"request" => encoded}, opts} =
+      Enum.find(Manager.calls(context.stub), fn
+        {:execute, _worker_id, "patchbay-filesystem", _arguments, _opts} -> true
+        _other -> false
+      end)
+
+    assert {:ok, request} = Patchbay.Provider.JSON.decode(encoded)
+    assert request["tool"] == "read_file"
+    assert request["config"]["root"] == workspace
+    assert request["arguments"] == %{"path" => "a.txt"}
+    assert request["variables"]["workspace"] == workspace
+    assert Keyword.get(opts, :variables)["workspace"] == workspace
+
+    Manager.set(context.stub, :execute_result, fn _operation, _arguments ->
+      {:ok,
+       Patchbay.Toolkit.Native.Filesystem.worker_reply(
+         {:error, {:path_traversal_not_allowed, "../escape.txt"}}
+       )}
+    end)
+
+    assert {:error, {:path_traversal_not_allowed, "../escape.txt"}} =
+             Runtime.execute_tool(runtime, "alpha", "read_file", %{"path" => "../escape.txt"})
+
+    assert {:ok, _stopped} = Runtime.stop_agent(runtime, "alpha")
+  end
+
+  test "a failed start keeps secrets through finalize and redacts every output", context do
+    secret = "ghp_failed_start_secret"
+    :ok = Secrets.put(Path.join(context.tmp, "state/secrets"), "github-main", secret)
+
+    echo = System.find_executable("echo")
+
+    init = %Patchbay.Definition.Toolkit.Operation{
+      name: "init",
+      executable: echo,
+      argv: ["{%agent_id}"],
+      arguments: %{}
+    }
+
+    finalize = %Patchbay.Definition.Toolkit.Operation{
+      name: "cleanup",
+      executable: echo,
+      argv: ["{%agent_id}"],
+      arguments: %{}
+    }
+
+    lifecycle = %Patchbay.Definition.Lifecycle{
+      kind: :one_shot,
+      init: [init],
+      finalize: [finalize]
+    }
+
+    definition = secret_definition("alpha")
+    Definitions.put(%{definition | lifecycle: lifecycle})
+    runtime = start_runtime(context)
+
+    Manager.set(context.stub, :execute_result, fn operation, _arguments ->
+      case operation do
+        "patchbay-lifecycle-init-0" ->
+          {:ok, %{status: :error, exit_status: 1, output: "boom #{secret}"}}
+
+        "patchbay-lifecycle-finalize-0" ->
+          {:ok, %{status: :ok, exit_status: 0, output: "cleanup #{secret}"}}
+
+        _other ->
+          {:ok, %{status: :ok, output: "stub\n", exit_status: 0}}
+      end
+    end)
+
+    assert {:error, reason} = Runtime.start_agent(runtime, "alpha")
+    assert inspect(reason) =~ "[redacted]"
+    refute inspect(reason) =~ secret
+
+    calls = Manager.calls(context.stub)
+
+    assert Enum.any?(
+             calls,
+             &match?({:execute, _, "patchbay-lifecycle-finalize-0", _, _}, &1)
+           )
+
+    assert {:ok, events} = Runtime.list_events(runtime, "alpha")
+
+    assert Enum.any?(events, fn event ->
+             event.type == :hook_finished and event.data["phase"] == "finalize" and
+               event.data["output"] == "cleanup [redacted]"
+           end)
+
+    assert Enum.any?(events, &(&1.type == :agent_start_failed))
+    refute inspect(events) =~ secret
+
+    # The values are forgotten once the failed start has written its records.
+    assert :sys.get_state(runtime).secret_values == %{}
+  end
+
+  test "a stop that fails after finalize does not run finalize again on retry", context do
+    echo = System.find_executable("echo")
+
+    finalize = %Patchbay.Definition.Toolkit.Operation{
+      name: "cleanup",
+      executable: echo,
+      argv: ["{%agent_id}"],
+      arguments: %{}
+    }
+
+    lifecycle = %Patchbay.Definition.Lifecycle{
+      kind: :one_shot,
+      init: [],
+      finalize: [finalize]
+    }
+
+    definition = definition("alpha")
+    Definitions.put(%{definition | lifecycle: lifecycle})
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+
+    Manager.set(context.stub, :stop_result, {:error, :control_unavailable})
+    assert {:error, :control_unavailable} = Runtime.stop_agent(runtime, "alpha")
+
+    assert {:ok, running} = Runtime.get_agent(runtime, "alpha")
+    assert running.status == :running
+
+    Manager.set(context.stub, :stop_result, {:ok, %{status: :stopping}})
+    assert {:ok, stopped} = Runtime.stop_agent(runtime, "alpha")
+    assert stopped.status == :stopped
+
+    calls = Manager.calls(context.stub)
+
+    finalize_calls =
+      Enum.count(
+        calls,
+        &match?({:execute, _, "patchbay-lifecycle-finalize-0", _, _}, &1)
+      )
+
+    assert finalize_calls == 1
+
+    assert {:ok, events} = Runtime.list_events(runtime, "alpha")
+
+    assert Enum.count(events, fn event ->
+             event.type == :hook_finished and event.data["phase"] == "finalize"
+           end) == 1
+  end
+
   test "implicit terminal tools resolve to a native dispatcher", context do
     Definitions.put(definition("alpha"))
     runtime = start_runtime(context)
@@ -446,7 +632,7 @@ defmodule Patchbay.RuntimeTest do
              Runtime.execute_tool(runtime, "alpha", "complete_task", %{})
   end
 
-  test "lifecycle init and finalize hooks run with fixed variables", context do
+  test "lifecycle init and finalize hooks run through the worker as fixed operations", context do
     echo = System.find_executable("echo")
 
     hook = %Patchbay.Definition.Toolkit.Operation{
@@ -469,6 +655,40 @@ defmodule Patchbay.RuntimeTest do
     assert {:ok, _} = Runtime.start_agent(runtime, "alpha")
     assert {:ok, _} = Runtime.stop_agent(runtime, "alpha")
 
+    calls = Manager.calls(context.stub)
+
+    assert Enum.any?(calls, fn
+             {:execute, "agent.alpha", "patchbay-lifecycle-init-0", %{}, opts} ->
+               Keyword.has_key?(opts, :timeout) and is_map(Keyword.get(opts, :variables))
+
+             _other ->
+               false
+           end)
+
+    assert Enum.any?(
+             calls,
+             &match?({:execute, "agent.alpha", "patchbay-lifecycle-finalize-0", _args, _opts}, &1)
+           )
+
+    # Finalize hooks still run while the worker exists, before the stop call.
+    init_index =
+      Enum.find_index(
+        calls,
+        &match?({:execute, "agent.alpha", "patchbay-lifecycle-init-0", _, _}, &1)
+      )
+
+    finalize_index =
+      Enum.find_index(
+        calls,
+        &match?({:execute, "agent.alpha", "patchbay-lifecycle-finalize-0", _, _}, &1)
+      )
+
+    stop_index = Enum.find_index(calls, &match?({:stop_worker, _, _}, &1))
+
+    assert is_integer(init_index)
+    assert is_integer(finalize_index)
+    assert finalize_index < stop_index
+
     assert {:ok, events} = Runtime.list_events(runtime, "alpha")
 
     assert Enum.any?(
@@ -484,11 +704,9 @@ defmodule Patchbay.RuntimeTest do
            )
   end
 
-  test "finalize hooks clean up after a partial init failure", context do
+  test "finalize hooks run when an init hook fails, and the worker is stopped after them",
+       context do
     echo = System.find_executable("echo")
-    false_exe = System.find_executable("false")
-    sh = System.find_executable("sh")
-    marker = Path.join(context.tmp, "finalized")
 
     hook = %Patchbay.Definition.Toolkit.Operation{
       name: "hook",
@@ -497,17 +715,17 @@ defmodule Patchbay.RuntimeTest do
       arguments: %{}
     }
 
-    finalize = %Patchbay.Definition.Toolkit.Operation{
-      name: "cleanup",
-      executable: sh,
-      argv: ["-c", "touch #{marker}"],
+    fail_hook = %Patchbay.Definition.Toolkit.Operation{
+      name: "explode",
+      executable: echo,
+      argv: ["{%run_state}"],
       arguments: %{}
     }
 
-    fail_hook = %Patchbay.Definition.Toolkit.Operation{
-      name: "explode",
-      executable: false_exe,
-      argv: [],
+    finalize = %Patchbay.Definition.Toolkit.Operation{
+      name: "cleanup",
+      executable: echo,
+      argv: ["{%agent_id}"],
       arguments: %{}
     }
 
@@ -522,12 +740,36 @@ defmodule Patchbay.RuntimeTest do
     runtime = start_runtime(context)
     manager = context.stub
 
-    Manager.set(manager, :start_results, [{:ok, %{worker_id: "agent.alpha", status: :starting}}])
+    Manager.set(
+      manager,
+      :execute_result,
+      fn operation, _arguments ->
+        if operation == "patchbay-lifecycle-init-1",
+          do: {:ok, %{status: :error, exit_status: 1, output: "boom"}},
+          else: {:ok, %{status: :ok, output: "stub\n", exit_status: 0}}
+      end
+    )
 
-    assert {:error, {:lifecycle_init, {"explode", _reason}}} =
+    assert {:error, {:lifecycle_init, {"explode", {:exit_status, 1, "boom"}}}} =
              Runtime.start_agent(runtime, "alpha")
 
-    assert File.exists?(marker)
+    calls = Manager.calls(manager)
+
+    assert Enum.any?(calls, fn call ->
+             case call do
+               {:execute, "agent.alpha", "patchbay-lifecycle-finalize-0", %{}, _opts} -> true
+               _other -> false
+             end
+           end)
+
+    finalize_index =
+      Enum.find_index(calls, &match?({:execute, _, "patchbay-lifecycle-finalize-0", _, _}, &1))
+
+    stop_index = Enum.find_index(calls, &match?({:stop_worker, _, _}, &1))
+
+    assert is_integer(finalize_index)
+    assert is_integer(stop_index)
+    assert finalize_index < stop_index
 
     assert {:ok, events} = Runtime.list_events(runtime, "alpha")
 
@@ -535,6 +777,61 @@ defmodule Patchbay.RuntimeTest do
              event.type == :hook_finished and event.data["phase"] == "finalize" and
                event.data["hook"] == "cleanup"
            end)
+
+    assert Enum.any?(events, fn event ->
+             event.type == :hook_failed and event.data["phase"] == "init" and
+               event.data["hook"] == "explode"
+           end)
+  end
+
+  test "a disabled workspace is not allocated and hooks run without one", context do
+    echo = System.find_executable("echo")
+
+    {:ok, definition} =
+      Patchbay.Definition.parse("""
+      format-version = 1
+      id = "alpha"
+
+      [model]
+      name = "test-model"
+
+      [lifecycle]
+      kind = "one-shot"
+
+      [workspace]
+      enabled = false
+
+      [[lifecycle.init]]
+      name = "stamp"
+      executable = "#{echo}"
+      argv = ["{%agent_id}"]
+      """)
+
+    Definitions.put(definition)
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+
+    assert [start | _rest] =
+             Enum.filter(Manager.calls(context.stub), &match?({:start_worker, _, _}, &1))
+
+    {:start_worker, "agent.alpha", opts} = start
+
+    assert Keyword.get(opts, :workspace_disabled) == true
+    assert Keyword.get(opts, :workspace) == nil
+    assert is_binary(Keyword.get(opts, :result_dir))
+
+    refute File.dir?(Path.join(context.tmp, "workspaces/alpha"))
+
+    assert Enum.any?(Manager.calls(context.stub), fn
+             {:execute, "agent.alpha", "patchbay-lifecycle-init-0", %{}, _opts} -> true
+             _other -> false
+           end)
+
+    assert {:ok, events} = Runtime.list_events(runtime, "alpha")
+    assert Enum.any?(events, &(&1.type == :hook_finished))
+
+    assert {:ok, _stopped} = Runtime.stop_agent(runtime, "alpha")
   end
 
   test "a failed worker start interrupts the run and the next start resumes its attempt",

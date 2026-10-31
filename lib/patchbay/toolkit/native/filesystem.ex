@@ -6,11 +6,17 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
   against the agent's `config_root` and must stay strictly below it. Absolute
   roots are trusted operator configuration: they may point at an agent-owned
   workspace or project directory outside the config tree, but they must not
-  overlap `/proc` or the manager's state, runtime, or secret paths. Native
-  filesystem tools execute inside the manager process rather than the isolated
-  worker, so those manager-owned trees would otherwise expose transcripts,
-  control tokens, signing salts, and similar material to model-supplied paths.
-  Valid absolute workspace and project roots remain accepted.
+  overlap `/proc` or the manager's state, runtime, or secret paths.
+
+  The tools run inside the agent worker through the reserved
+  `patchbay-filesystem` operation, because the usual roots are agent-owned
+  directories that the manager cannot traverse across the UID split. The
+  runtime renders the configured root and rejects a protected one before
+  dispatch, without resolving anything inside the agent-owned tree; the
+  worker then resolves the real path and confines every model path below it.
+  Symlink checks therefore always happen in the process that owns the tree,
+  so a link the agent swaps between the manager's check and the read cannot
+  redirect the manager into its own state, runtime, or secret paths.
 
   Every model-supplied path is relative, is checked component by component,
   and is confined below the effective root. Existing and missing paths are both
@@ -24,7 +30,24 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
 
   @behaviour Patchbay.Toolkit.Native
 
+  alias Patchbay.Provider.JSON
+  alias Patchbay.Toolkit.Variables
+
   @id "filesystem"
+
+  @worker_operation "patchbay-filesystem"
+
+  @worker_result_keys %{
+    "output" => :output,
+    "path" => :path,
+    "bytes" => :bytes,
+    "entries" => :entries,
+    "truncated" => :truncated
+  }
+
+  # Filesystem errors are small terms. The bound keeps a worker from turning
+  # one refused call into a large decode in the manager.
+  @max_error_bytes 65_536
 
   @read_file "read_file"
   @list_directory "list_directory"
@@ -61,11 +84,17 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
   Validates a toolkit `config` at definition load time.
 
   `config.root` is required. A relative root must resolve strictly below the
-  agent's config root. An absolute root is trusted configuration, but it is
-  rejected when it overlaps `/proc` or a configured manager state, runtime, or
-  secret path. Pass `:state_dir`, `:runtime_dir`, `:protected_roots`, or
-  `:secret_roots` to check against explicit paths instead of the process
-  environment.
+  agent's config root; the relative form is the intended way to scope a
+  toolkit to the config tree. A root that interpolates fixed variables is
+  checked for template validity here and expanded at execution time, when the
+  variables exist. Only a root that is absolute without interpolation can be
+  checked for protected paths now; one that becomes absolute after rendering
+  is checked at execution instead. The shell-style `${%name}` sequence is
+  rejected because it stays literal instead of expanding. An absolute root is
+  trusted configuration, but it is rejected when it overlaps `/proc` or a
+  configured manager state, runtime, or secret path. Pass `:state_dir`,
+  `:runtime_dir`, `:protected_roots`, or `:secret_roots` to check against
+  explicit paths instead of the process environment.
   """
   @spec validate_config(term(), Path.t() | nil, keyword()) :: :ok | {:error, String.t()}
   def validate_config(config, config_root, opts \\ [])
@@ -80,11 +109,24 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
           String.trim(root) == "" ->
             {:error, "must be a non-empty path"}
 
-          Path.type(root) == :absolute ->
-            validate_absolute_root(root, opts)
+          Variables.shell_style_variable?(root) ->
+            {:error,
+             "must not use the shell-style ${%...} sequence; it stays literal instead of expanding, so use the {%workspace} form directly"}
 
           true ->
-            validate_relative_root(root, config_root)
+            root_variables = Variables.references(root).variables
+
+            case Enum.reject(root_variables, &Variables.known?/1) do
+              [] ->
+                if root_variables == [] do
+                  validate_literal_root(root, config_root, opts)
+                else
+                  :ok
+                end
+
+              unknown ->
+                {:error, "uses unsupported fixed variable {%" <> hd(unknown) <> "}"}
+            end
         end
 
       nil ->
@@ -97,6 +139,14 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
 
   def validate_config(_config, _config_root, _opts),
     do: {:error, "must be a table with a root path"}
+
+  defp validate_literal_root(root, config_root, opts) do
+    if Path.type(root) == :absolute do
+      validate_absolute_root(root, opts)
+    else
+      validate_relative_root(root, config_root)
+    end
+  end
 
   defp validate_absolute_root(root, opts) do
     if protected_root?(canonical_candidate(root), protected_roots(opts)) do
@@ -130,6 +180,83 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
       _ -> String.starts_with?(path, base <> "/")
     end
   end
+
+  @doc """
+  Name of the reserved worker operation that runs these tools.
+
+  Agent definitions cannot declare an operation with this name.
+  """
+  @impl true
+  @spec worker_operation() :: String.t()
+  def worker_operation, do: @worker_operation
+
+  @doc """
+  Builds the wire request that runs one tool inside the agent worker.
+
+  `context` carries `:config` (this toolkit's configuration), `:variables`,
+  `:config_root`, `:state_dir`, and `:runtime_dir`. The root is rendered here
+  and checked against the protected paths lexically: the caller cannot
+  resolve symlinks inside the agent-owned tree without risking `EACCES` or
+  racing the agent. The worker repeats the check on the real path.
+  """
+  @impl true
+  @spec worker_request(String.t(), map(), map()) :: {:ok, map()} | {:error, term()}
+  def worker_request(tool, arguments, context) when is_binary(tool) and is_map(arguments) do
+    with {:ok, config} <- toolkit_config(context),
+         {:ok, config} <- worker_config(config, context),
+         {:ok, encoded} <- encode_worker_request(worker_payload(tool, arguments, config, context)) do
+      {:ok, %{"request" => encoded}}
+    end
+  end
+
+  def worker_request(_tool, _arguments, _context), do: {:error, :invalid_arguments}
+
+  @doc """
+  Runs one reserved worker request and returns a worker result map.
+
+  A tool failure is a normal result with `status: :ok` and a JSON envelope;
+  the manager decodes it back into the `execute/3` error shape, so the
+  structured reason survives the worker boundary.
+  """
+  @spec worker_execute(term()) :: {:ok, map()} | {:error, term()}
+  def worker_execute(%{"request" => encoded}) when is_binary(encoded) do
+    {:ok, worker_reply(decode_worker_request(encoded))}
+  end
+
+  def worker_execute(_arguments), do: {:ok, worker_reply({:error, :invalid_filesystem_request})}
+
+  @doc """
+  Decodes a manager-side worker result back into the `execute/3` shape.
+  """
+  @impl true
+  @spec worker_result(term()) :: {:ok, map()} | {:error, term()}
+  def worker_result({:ok, %{status: :ok, output: output}}) when is_binary(output) do
+    case JSON.decode(output) do
+      {:ok, %{"ok" => true, "result" => result}} when is_map(result) ->
+        normalize_worker_result(result)
+
+      {:ok, %{"ok" => false, "error" => error}} ->
+        decode_worker_error(error)
+
+      _other ->
+        {:error, :invalid_filesystem_response}
+    end
+  end
+
+  def worker_result({:ok, %{status: _status} = result}),
+    do: {:error, {:filesystem_worker_failed, Map.get(result, :error)}}
+
+  def worker_result({:error, reason}), do: {:error, reason}
+  def worker_result(_other), do: {:error, :invalid_filesystem_response}
+
+  @doc """
+  Canonical paths that no filesystem root may overlap.
+
+  The worker receives the same list so both sides reject a root that points
+  at `/proc`, manager state, runtime, or a secret file.
+  """
+  @spec protected_paths(keyword()) :: [Path.t()]
+  def protected_paths(opts \\ []), do: protected_roots(opts)
 
   @impl true
   def tools(_context) do
@@ -290,10 +417,38 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
   defp environment(context) do
     with {:ok, config} <- toolkit_config(context),
          {:ok, root_value} <- required_root(config),
+         {:ok, root_value} <- expand_root(root_value, context),
          {:ok, base} <- base_for_root(context, root_value),
          {:ok, root} <- canonical_root(base, root_value),
          :ok <- unprotected_root(root, protected_options(context)) do
       {:ok, root, limits(config)}
+    end
+  end
+
+  # `config.root` may interpolate fixed variables, so the configured value is
+  # rendered with the full variable map the runtime carries for this agent
+  # before it is treated as an absolute or relative path.
+  defp expand_root(root_value, context) do
+    case Variables.render(root_value, variables(context), %{}) do
+      {:ok, rendered} when is_binary(rendered) -> {:ok, rendered}
+      {:ok, :omit} -> {:error, {:invalid_root, root_value}}
+      {:error, {:unavailable_variable, name}} -> {:error, {:root_variable_unavailable, name}}
+      {:error, _reason} -> {:error, {:invalid_root, root_value}}
+    end
+  end
+
+  defp variables(context) do
+    case fetch(context, :variables) do
+      variables when is_map(variables) ->
+        variables
+
+      _other ->
+        context
+        |> fetch(:definition)
+        |> case do
+          definition when is_map(definition) -> Variables.context(definition)
+          _other -> %{}
+        end
     end
   end
 
@@ -815,6 +970,200 @@ defmodule Patchbay.Toolkit.Native.Filesystem do
       nil -> {:ok, default}
       value when is_boolean(value) -> {:ok, value}
       _other -> {:error, {:invalid_argument, key}}
+    end
+  end
+
+  defp worker_payload(tool, arguments, config, context) do
+    protected = protected_options(context)
+
+    %{
+      "tool" => tool,
+      "arguments" => arguments,
+      "config" => config,
+      "variables" => variables(context),
+      "config_root" =>
+        fetch(context, :config_root) || fetch(fetch(context, :definition) || %{}, :config_root),
+      "protected" => %{
+        "state_dir" => fetch(context, :state_dir),
+        "runtime_dir" => fetch(context, :runtime_dir),
+        "protected_roots" => protected_paths(protected),
+        "secret_roots" => fetch(context, :secret_roots) || []
+      }
+    }
+  end
+
+  defp encode_worker_request(payload) do
+    case JSON.encode(payload) do
+      {:ok, encoded} when is_binary(encoded) -> {:ok, encoded}
+      {:error, reason} -> {:error, {:invalid_filesystem_request, reason}}
+    end
+  end
+
+  defp decode_worker_request(encoded) do
+    with {:ok, %{} = request} <- JSON.decode(encoded),
+         {:ok, tool} <- request_tool(request),
+         {:ok, arguments} <- request_arguments(request),
+         {:ok, context} <- request_context(request) do
+      execute(tool, arguments, context)
+    else
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_filesystem_request}
+    end
+  end
+
+  defp request_tool(request) do
+    case Map.get(request, "tool") do
+      tool when is_binary(tool) and tool != "" -> {:ok, tool}
+      _other -> {:error, :invalid_filesystem_request}
+    end
+  end
+
+  defp request_arguments(request) do
+    case Map.get(request, "arguments", %{}) do
+      arguments when is_map(arguments) -> {:ok, arguments}
+      _other -> {:error, :invalid_arguments}
+    end
+  end
+
+  defp request_context(request) do
+    config = Map.get(request, "config")
+    variables = Map.get(request, "variables", %{})
+    protected = Map.get(request, "protected", %{})
+
+    if is_map(config) and is_map(variables) and is_map(protected) do
+      {:ok,
+       %{
+         config: config,
+         variables: variables,
+         config_root: Map.get(request, "config_root"),
+         state_dir: Map.get(protected, "state_dir"),
+         runtime_dir: Map.get(protected, "runtime_dir"),
+         protected_roots: string_list(Map.get(protected, "protected_roots")),
+         secret_roots: string_list(Map.get(protected, "secret_roots"))
+       }}
+    else
+      {:error, :invalid_filesystem_request}
+    end
+  end
+
+  defp string_list(values) when is_list(values), do: Enum.filter(values, &is_binary/1)
+  defp string_list(_values), do: []
+
+  @doc false
+  @spec worker_reply({:ok, map()} | {:error, term()}) :: map()
+  def worker_reply(reply), do: encode_worker_reply(reply)
+
+  defp encode_worker_reply({:ok, %{} = result}) do
+    %{status: :ok, output: json!(%{"ok" => true, "result" => result})}
+  end
+
+  defp encode_worker_reply({:error, reason}) do
+    %{status: :ok, output: json!(%{"ok" => false, "error" => encode_worker_error(reason)})}
+  end
+
+  defp normalize_worker_result(result) do
+    status =
+      case Map.get(result, "status") do
+        "error" -> :error
+        _other -> :ok
+      end
+
+    normalized =
+      result
+      |> Map.take(Map.keys(@worker_result_keys))
+      |> Map.new(fn {key, value} -> {Map.fetch!(@worker_result_keys, key), value} end)
+
+    {:ok, normalized |> Map.put_new(:output, "") |> Map.put(:status, status)}
+  end
+
+  defp encode_worker_error(reason) do
+    %{"term" => Base.encode64(:erlang.term_to_binary(reason, minor_version: 1))}
+  end
+
+  defp decode_worker_error(%{"term" => encoded}) when is_binary(encoded) do
+    if byte_size(encoded) > @max_error_bytes do
+      {:error, :filesystem_worker_error}
+    else
+      decode_error_term(encoded)
+    end
+  end
+
+  defp decode_worker_error(_error), do: {:error, :filesystem_worker_error}
+
+  defp decode_error_term(encoded) do
+    with {:ok, binary} when byte_size(binary) <= @max_error_bytes <- Base.decode64(encoded),
+         false <- match?(<<131, 80, _::binary>>, binary),
+         {:ok, reason} <- safe_binary_to_term(binary) do
+      {:error, reason}
+    else
+      _other -> {:error, :filesystem_worker_error}
+    end
+  end
+
+  # The worker is less trusted than the manager. Safe decoding refuses funs,
+  # pids, references, and atoms this VM has not created; every tag in a
+  # filesystem error is a literal in this module, which is loaded here.
+  defp safe_binary_to_term(binary) do
+    try do
+      {:ok, :erlang.binary_to_term(binary, [:safe])}
+    rescue
+      _error -> :error
+    end
+  end
+
+  defp json!(payload) do
+    case JSON.encode(payload) do
+      {:ok, encoded} -> encoded
+      {:error, _reason} -> "{}"
+    end
+  end
+
+  defp worker_config(config, context) do
+    with {:ok, root_value} <- required_root(config),
+         {:ok, rendered} <- expand_root(root_value, context),
+         :ok <- validate_worker_root(rendered, context, protected_options(context)) do
+      {:ok, put_root(config, rendered)}
+    end
+  end
+
+  defp put_root(config, rendered) do
+    if Map.has_key?(config, :root),
+      do: Map.put(config, :root, rendered),
+      else: Map.put(config, "root", rendered)
+  end
+
+  defp validate_worker_root(rendered, context, opts) do
+    cond do
+      String.contains?(rendered, <<0>>) ->
+        {:error, {:invalid_root, rendered}}
+
+      String.trim(rendered) == "" ->
+        {:error, {:invalid_root, rendered}}
+
+      Path.type(rendered) == :absolute ->
+        candidate = Path.expand(rendered)
+
+        case Enum.find(protected_roots(opts), &overlaps?(candidate, &1)) do
+          nil -> :ok
+          protected -> {:error, {:root_protected, candidate, protected}}
+        end
+
+      true ->
+        validate_lexical_relative_root(rendered, context)
+    end
+  end
+
+  defp validate_lexical_relative_root(rendered, context) do
+    with {:ok, config_root} <- config_root(context) do
+      base = Path.expand(config_root)
+      candidate = Path.expand(rendered, base)
+
+      if Path.type(config_root) == :absolute and candidate != base and
+           lexical_below?(candidate, base) do
+        :ok
+      else
+        {:error, {:root_not_strictly_below_config_root, candidate, base}}
+      end
     end
   end
 

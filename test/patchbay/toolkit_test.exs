@@ -460,6 +460,22 @@ defmodule Patchbay.ToolkitTest do
   end
 
   describe "lifecycle hooks" do
+    test "rejects shell-style substitution in argv" do
+      body =
+        hook_agent("""
+        [[lifecycle.init]]
+        name = "bad"
+        argv = ["/bin/echo", "${%workspace}"]
+        """)
+
+      assert {:error, %Definition.Error{errors: errors}} = Definition.parse(body)
+
+      assert Enum.any?(errors, fn issue ->
+               issue.path == ["lifecycle", "init", 0, "argv", 1] and
+                 issue.message =~ "shell-style"
+             end)
+    end
+
     test "parses init and finalize hooks that use fixed variables" do
       body =
         hook_agent("""
@@ -514,22 +530,46 @@ defmodule Patchbay.ToolkitTest do
              end)
     end
 
-    test "expands and executes a hook with fixed variables" do
+    test "plans worker operations for hooks with fixed variables" do
       echo = System.find_executable("echo")
 
       body =
         hook_agent("""
         [[lifecycle.init]]
         name = "prepare"
-        argv = ["#{echo}", "{%agent_id}"]
+        executable = "#{echo}"
+        argv = ["{%agent_id}"]
+
+        [[lifecycle.finalize]]
+        name = "cleanup"
+        executable = "#{echo}"
+        argv = ["{%run_state}"]
         """)
 
       assert {:ok, %{lifecycle: lifecycle}} = Definition.parse(body)
-      variables = %{"agent_id" => "alpha"}
 
-      assert {:ok, [hook]} = Hooks.expand(lifecycle, :init, variables)
-      assert hook == %{name: "prepare", executable: echo, argv: ["alpha"]}
-      assert {:ok, %{output: "alpha\n", exit_status: 0}} = Hooks.execute(hook)
+      plan = Hooks.plan(lifecycle)
+
+      assert [%{declared: "prepare", worker_name: "patchbay-lifecycle-init-0"}] = plan.init
+
+      assert [%{declared: "cleanup", worker_name: "patchbay-lifecycle-finalize-0"}] =
+               plan.finalize
+
+      assert [
+               %{
+                 name: "patchbay-lifecycle-init-0",
+                 executable: ^echo,
+                 argv: ["{%agent_id}"]
+               }
+               | _
+             ] = plan.operations
+
+      assert Enum.map(plan.operations, & &1.name) ==
+               ["patchbay-lifecycle-init-0", "patchbay-lifecycle-finalize-0"]
+
+      # Reserved names never collide with a declared operation.
+      plan = Hooks.plan(lifecycle, ["patchbay-lifecycle-init-0"])
+      assert [%{worker_name: "patchbay-lifecycle-init-0-2"} | _rest] = plan.init
     end
   end
 

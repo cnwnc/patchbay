@@ -17,7 +17,8 @@ defmodule Patchbay.Definition.Agent do
     Prompt,
     Result,
     Teardown,
-    Toolkit
+    Toolkit,
+    Workspace
   }
 
   defstruct [
@@ -28,6 +29,7 @@ defmodule Patchbay.Definition.Agent do
     :config_root,
     :model,
     :lifecycle,
+    :workspace,
     :environment,
     :context,
     :teardown,
@@ -47,6 +49,7 @@ defmodule Patchbay.Definition.Agent do
           config_root: Path.t() | nil,
           model: Model.t() | nil,
           lifecycle: Lifecycle.t() | nil,
+          workspace: Workspace.t(),
           environment: Environment.t(),
           context: Context.t(),
           teardown: Teardown.t(),
@@ -69,6 +72,7 @@ defmodule Patchbay.Definition.Agent do
 
     {model, errors} = Model.from_map(Map.get(raw, "model"), errors)
     {lifecycle, errors} = Lifecycle.from_map(Map.get(raw, "lifecycle"), errors)
+    {workspace, errors} = Workspace.from_map(Map.get(raw, "workspace"), errors)
     {environment, errors} = Environment.from_map(Map.get(raw, "environment"), errors)
     {context, errors} = Context.from_map(Map.get(raw, "context"), errors)
     {teardown, errors} = Teardown.from_map(Map.get(raw, "teardown"), errors)
@@ -83,6 +87,7 @@ defmodule Patchbay.Definition.Agent do
       id: id,
       model: model,
       lifecycle: lifecycle,
+      workspace: workspace,
       environment: environment,
       context: context,
       teardown: teardown,

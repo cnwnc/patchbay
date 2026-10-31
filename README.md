@@ -65,9 +65,9 @@ The workspace, result, state, runtime, transcript, and per-agent roots are separ
 
 The `/config` route has SOURCE and STRUCTURED tabs for the selected definition. Both save through the revision-checked `Patchbay.Config.Source.write/4`; a file changed after it was loaded produces a save conflict instead of an overwrite.
 
-The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, and reasoning; lifecycle kind, schedule, overlap, and catch-up; `[[lifecycle.init]]` and `[[lifecycle.finalize]]` hooks; environment packages; context recovery and compaction thresholds; teardown workspace; budgets; toolkits and results. Invalid or blank definitions use the source editor only.
+The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, and reasoning; lifecycle kind, schedule, overlap, and catch-up; `[[lifecycle.init]]` and `[[lifecycle.finalize]]` hooks; environment packages; workspace allocation; context recovery and compaction thresholds; teardown workspace; budgets; toolkits and results. Invalid or blank definitions use the source editor only.
 
-Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
+Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check, and which accepts `{%variable}` tokens such as `{%workspace}`, as its field label notes), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
 
 Inline `[[toolkits.operations]]` are edited with executable, argv, and model-facing arguments. Argument rows carry the type (string, number, integer, boolean, enum, path, file, directory), an explicit required flag, and for `enum` the accepted values. Lifecycle hooks use the fixed-operation schema with its hook restrictions (absolute executable, no model-facing arguments); the placeholders use `/nix/store/.../bin/tool` to keep paths absolute and NixOS-neutral. Context recovery offers every accepted word grouped by what it does today: keep-side values (keep, carry, handoff, prompt, full, all, continue, resume, checkpoint, queryable) and reset-side values (reset, none, fresh, clear, drop, new). Several words currently map to the same keep or reset behavior and the option labels say so. Results are edited with form, required, `required-by`, and `extensions`; an `""` extensions line declares the empty-string extension that matches files without any extension. Result IDs, `required-by` references, dependency cycles, argument declarations, hook argv, and secret reference syntax are validated before writing.
 
@@ -136,7 +136,7 @@ Supported cron forms are `*`, a number, `a-b`, `*/n`, `a-b/n`, and comma-separat
 | `executable` | string | no | Absolute executable path. When omitted, `argv[0]` is the executable. |
 | `argv` | array of strings | yes | Arguments. May be empty when `executable` is set. When `executable` is omitted, `argv` must be non-empty and `argv[0]` must be absolute. |
 
-Hooks run without a shell, with the agent workspace as the working directory when it exists, or the manager's working directory otherwise. Hook argv supports fixed variables only. A failing init hook fails the start. A failing finalize hook is reported as a `hook_failed` event and does not undo the completed, failed, or stopped run.
+Hooks run without a shell as fixed operations inside the agent worker, with the workspace as the working directory when one exists. The manager relays the execute request over the worker protocol and never spawns hook processes itself, so hooks can create files in the agent-owned workspace across the manager/worker UID boundary. Init hooks run after the worker is ready. Finalize hooks run while the worker still exists, before the stop that ends the agent; a failed start also runs finalize hooks for cleanup before the worker is torn down. Because finalize runs before the terminal transition, `{%run_state}` in a finalize hook still names the run's live state. Hook argv supports fixed variables only. A failing init hook fails the start. A failing finalize hook is reported as a `hook_failed` event and does not undo the completed, failed, or stopped run.
 
 ### `[environment]`
 
@@ -191,6 +191,14 @@ When the last stored run is closed:
 With no stored run, context is always reset.
 
 Compaction is enabled when `threshold` is greater than zero. After a model response, a token estimate above the threshold starts compaction: older messages are summarized through the configured provider, a recent suffix is retained, the full generation is archived under `<state_dir>/context/<agent>/archive`, and the current context is replaced only after summarization and archiving succeed. `target` defaults to half of `threshold` and is clamped below `threshold`; `threshold = 0` disables compaction.
+
+### `[workspace]`
+
+| Key | Type | Required | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `enabled` | boolean | no | `true` | When `false`, the agent gets no workspace: none is allocated, `{%workspace}` is unavailable, and definitions that require it — operations, hooks, or filesystem roots built on `{%workspace}`, and `file` results — fail validation. |
+
+The absent table or key keeps the workspace enabled for compatibility with existing definitions. The structured editor exposes the toggle. The result directory is unaffected by this setting and stays separate from the workspace.
 
 ### `[teardown]`
 
@@ -415,7 +423,7 @@ Fixed variables:
 
 | Variable | Value |
 | --- | --- |
-| `{%workspace}` | Agent workspace. Operations fail if argv uses it and no workspace is available. |
+| `{%workspace}` | Agent workspace. Operations fail if argv uses it and no workspace is available, and definitions using it while `[workspace] enabled = false` are rejected at load time. A `$` in front of a fixed variable, such as `${%workspace}`, is not one of these tokens: the sequence stays literal, and validation flags it as unsupported. |
 | `{%result_dir}` | Agent result directory. |
 | `{%agent_id}` | Agent id. |
 | `{%run_id}` | Current run id, when a run exists. |
@@ -427,7 +435,7 @@ Fixed variables:
 
 A fixed variable whose value is unavailable fails rendering. Fixed variables and model argument references are validated at definition load time: unknown fixed variables, undeclared model arguments, and model arguments in lifecycle hooks are errors.
 
-Operations execute without a shell. Fixed operations and their arguments run in the worker process with the workspace as the working directory. Native toolkits run in the manager process. Worker operation children receive an allowlisted process environment; provider credentials and `PATCHBAY_*` control tokens are not inherited. Tool names are deduplicated after combining implicit and declared toolkits, with earlier declarations winning; implicit terminal tools come first.
+Operations execute without a shell. Fixed operations and their arguments run in the worker process with the workspace as the working directory. Native toolkits run in the manager process, except the filesystem toolkit, whose tools run in the worker through a reserved operation. Worker operation children receive an allowlisted process environment; provider credentials and `PATCHBAY_*` control tokens are not inherited. Tool names are deduplicated after combining implicit and declared toolkits, with earlier declarations winning; implicit terminal tools come first.
 
 ## Native toolkits
 
@@ -459,9 +467,11 @@ max_list_entries = 200
 
 Values above a hard limit are capped to the hard limit. Invalid or non-positive limits fall back to the default.
 
-Filesystem tools execute in the manager process rather than the isolated worker, so absolute roots are checked against manager-owned paths.
+Filesystem tools execute inside the agent worker through the reserved `patchbay-filesystem` operation, next to the artifact reader. The usual roots are agent-owned directories the manager cannot traverse across the UID split, and the manager must not follow a symlink the agent controls there. The runtime renders the configured root and keeps the load-time definition checks; it also refuses a root that overlaps the protected paths before dispatch, using lexical paths only. The worker then resolves the real root and confines every model path below it, so a link the agent swaps in between the manager's check and the read cannot redirect the manager into transcripts, state, runtime, or secret material. The manager sends the root, variables, and the protected path list with the request, and the worker enforces the same protected-path rule on the resolved root.
 
-A relative `root` is resolved against the agent's config root and must resolve strictly below it; `.` and `..` roots are rejected. An absolute `root` is trusted operator configuration and may point at an agent workspace or project directory outside the config tree, but it must not overlap `/proc` or the manager's state, runtime, or secret paths. The protected paths are the manager state and runtime directories plus any of `PATCHBAY_CONTROL_TOKEN_FILE`, `PATCHBAY_UI_TOKEN_FILE`, `PATCHBAY_SECRET_KEY_BASE_FILE`, and `PATCHBAY_SIGNING_SALTS_FILE` present in the environment. A relative root without an available absolute config root is a validation error.
+A relative `root` is resolved against the agent's config root and must resolve strictly below it; that resolution is the intended meaning of the relative form, including a relative path produced by interpolation. `.` and `..` roots are rejected. An absolute `root` is trusted operator configuration and may point at an agent workspace or project directory outside the config tree, but it must not overlap `/proc` or the manager's state, runtime, or secret paths. The protected paths are the manager state and runtime directories plus any of `PATCHBAY_CONTROL_TOKEN_FILE`, `PATCHBAY_UI_TOKEN_FILE`, `PATCHBAY_SECRET_KEY_BASE_FILE`, and `PATCHBAY_SIGNING_SALTS_FILE` present in the environment. A relative root without an available absolute config root is a validation error.
+
+A root may also interpolate fixed variables, `{%workspace}` included. Such a root is checked at load time for unknown variables and for the shell-style `${%workspace}` sequence, which is rejected rather than left literal, and it is rendered at execution time with the agent's full fixed variable map: the root may be exactly `{%workspace}` or a token next to other text. A root that renders absolute is treated as an absolute root and is checked against the protected paths at execution time; one that renders relative is resolved under the config root exactly like a literal relative root. A root whose variables are unavailable at execution is reported as a root error instead of falling back to another directory.
 
 Every model-supplied filesystem path is relative to the effective root, is checked component by component, and stays below the root. Existing and missing paths are resolved through existing symlinks, so a link that leaves the root is rejected before any read or write. Paths are limited to 4096 bytes. Reads, writes, edits, and directory listings are bounded, and writes are atomic within the target directory.
 
@@ -597,6 +607,8 @@ Rejected or ignored:
 - `overlap = "allow"` and `overlap = "queue"`; `schedule`, `overlap`, or `catch-up` on a non-scheduled lifecycle.
 - Model arguments declared or referenced in lifecycle hooks.
 - Result forms other than `prose`, `number`, `url`, and `file`; `extensions` outside file results.
+- `{%workspace}` in operation argv, lifecycle hooks, filesystem roots, or `file` results while `[workspace] enabled = false`; the workspace is unavailable, so anything built on the variable cannot run.
+- Shell-style `${%name}` sequences: they stay literal rather than expanding, and argv, hooks, and filesystem roots carrying one are rejected at load time.
 - New inline operations declared through `[[toolkits.operations]]` or top-level `[[operations]]` when the resolved manifest has no operation with that name; `Patchbay.Definition.load/2` drops them. Top-level `[[operations]]` also fails to load without a manifest named `fixed`.
 - Manifests that name an unregistered native toolkit; module names in TOML.
 - Implicit manifests whose native toolkit is not `terminal`; such manifests are ignored for global tool lists.

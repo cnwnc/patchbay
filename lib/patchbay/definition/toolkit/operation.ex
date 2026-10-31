@@ -134,6 +134,10 @@ defmodule Patchbay.Definition.Toolkit.Operation do
     "lifecycle hooks cannot reference model argument #{inspect(name)}"
   end
 
+  defp issue_message({:unsupported_shell_variable, match}) do
+    "uses shell-style #{inspect(match)} (the sequence stays literal); write the {%name} form instead"
+  end
+
   defp executable_from(raw, path, errors) do
     case Parse.optional_string(raw, "executable", path ++ ["executable"], errors) do
       {nil, errors} ->

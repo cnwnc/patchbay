@@ -8,7 +8,9 @@ defmodule Patchbay.Toolkit.Variables do
 
   Substitution is single pass: substituted values are never scanned again.
   `{{` and `}}` are escapes for literal braces, and any other brace sequence
-  that does not form a token is copied unchanged.
+  that does not form a token is copied unchanged. A `$` directly in front of
+  a `{%name}` token does not substitute: `${...}` is shell-style syntax and
+  the sequence stays literal.
   """
 
   @variables ~w(
@@ -27,6 +29,8 @@ defmodule Patchbay.Toolkit.Variables do
 
   @token ~r/\{%([A-Za-z_][A-Za-z0-9_]*)\}|\{([A-Za-z_][A-Za-z0-9_-]*)\}|\{\{|\}\}/
 
+  @shell_style ~r/\$\{%([A-Za-z_][A-Za-z0-9_]*)\}/
+
   @type name :: String.t()
   @type variables :: map()
   @type arguments :: map()
@@ -35,6 +39,7 @@ defmodule Patchbay.Toolkit.Variables do
           {:unknown_variable, String.t()}
           | {:undeclared_argument, String.t()}
           | {:model_argument_not_allowed, String.t()}
+          | {:unsupported_shell_variable, String.t()}
 
   @type render_error ::
           {:unknown_variable, String.t()}
@@ -53,7 +58,8 @@ defmodule Patchbay.Toolkit.Variables do
   @doc """
   Lists fixed variables and model argument names referenced by `template`.
 
-  Escaped braces are ignored. Tokens with an invalid shape stay literal.
+  Escaped braces are ignored. Tokens with an invalid shape stay literal, and
+  a `$` directly in front of a `{%name}` token is not a variable reference.
   """
   @spec references(String.t()) :: %{
           variables: [String.t()],
@@ -67,7 +73,9 @@ defmodule Patchbay.Toolkit.Variables do
   Validates the tokens in one argv element.
 
   Fixed variables must be registered. Model arguments must be declared unless
-  `:mode` is `:hook`, where model arguments are rejected outright.
+  `:mode` is `:hook`, where model arguments are rejected outright. The
+  shell-style `${%name}` sequence is rejected: it stays literal rather than
+  expanding, and silent non-substitution would surprise operators.
   """
   @spec validate(String.t(), map(), keyword()) :: :ok | {:error, [issue()]}
   def validate(template, declared_arguments \\ %{}, opts \\ []) when is_binary(template) do
@@ -75,12 +83,42 @@ defmodule Patchbay.Toolkit.Variables do
     refs = references(template)
 
     issues =
-      unknown_variables(refs.variables) ++
+      shell_variable_issues(template) ++
+        unknown_variables(refs.variables) ++
         argument_issues(refs.arguments, declared_arguments, mode)
 
     case issues do
       [] -> :ok
       issues -> {:error, issues}
+    end
+  end
+
+  @doc """
+  Returns true when `template` holds `${%name}`, the shell-style sequence.
+
+  `render/3` keeps such a sequence literal, so templates passing `validate/3`
+  never contain one.
+  """
+  @spec shell_style_variable?(String.t()) :: boolean()
+  def shell_style_variable?(template) when is_binary(template) do
+    Regex.match?(@shell_style, template)
+  end
+
+  @doc """
+  Names of every fixed variable referenced by any element of `argv`.
+  """
+  @spec referenced_variables([String.t()]) :: [String.t()]
+  def referenced_variables(argv) when is_list(argv) do
+    argv
+    |> Enum.filter(&is_binary/1)
+    |> Enum.flat_map(&references(&1).variables)
+    |> Enum.uniq()
+  end
+
+  defp shell_variable_issues(template) do
+    case Regex.run(@shell_style, template) do
+      [match | _captures] -> [{:unsupported_shell_variable, match}]
+      nil -> []
     end
   end
 
@@ -157,11 +195,18 @@ defmodule Patchbay.Toolkit.Variables do
 
       [{start, length} | _captures] ->
         token = binary_part(template, start, length)
-        acc = record_token(token, acc)
-        rest = binary_part(template, start + length, byte_size(template) - start - length)
-        do_references(rest, acc)
+
+        acc =
+          if dollar_prefixed?(template, start, token),
+            do: acc,
+            else: record_token(token, acc)
+
+        do_references(remainder(template, start, length), acc)
     end
   end
+
+  defp remainder(template, start, length),
+    do: binary_part(template, start + length, byte_size(template) - start - length)
 
   defp record_token("{{", acc), do: acc
   defp record_token("}}", acc), do: acc
@@ -175,6 +220,12 @@ defmodule Patchbay.Toolkit.Variables do
     name = inner_token(token, 1)
     %{acc | arguments: prepend_unique(acc.arguments, name)}
   end
+
+  defp dollar_prefixed?(template, start, "{%" <> _rest) when start > 0 do
+    binary_part(template, start - 1, 1) == "$"
+  end
+
+  defp dollar_prefixed?(_template, _start, _token), do: false
 
   defp inner_token(token, offset) when byte_size(token) >= offset + 2 do
     binary_part(token, offset, byte_size(token) - offset - 1)
@@ -212,21 +263,31 @@ defmodule Patchbay.Toolkit.Variables do
       [{start, length} | _captures] ->
         token = binary_part(template, start, length)
         prefix = binary_part(template, 0, start)
-        rest = binary_part(template, start + length, byte_size(template) - start - length)
+        rest = remainder(template, start, length)
 
-        case render_token(token, variables, arguments) do
-          {:ok, :literal, value} ->
-            do_render(rest, variables, arguments, acc <> prefix <> value, omitted?)
-
-          {:ok, :value, value} ->
-            do_render(rest, variables, arguments, acc <> prefix <> value, omitted?)
-
-          {:ok, :omitted} ->
-            do_render(rest, variables, arguments, acc <> prefix, true)
-
-          {:error, _reason} = error ->
-            error
+        if dollar_prefixed?(template, start, token) do
+          # A `$` directly in front of `{%name}` stays literal: `${...}` is
+          # shell-style syntax this template language does not define.
+          do_render(rest, variables, arguments, acc <> prefix <> token, omitted?)
+        else
+          render_token(token, prefix, rest, variables, arguments, acc, omitted?)
         end
+    end
+  end
+
+  defp render_token(token, prefix, rest, variables, arguments, acc, omitted?) do
+    case render_token(token, variables, arguments) do
+      {:ok, :literal, value} ->
+        do_render(rest, variables, arguments, acc <> prefix <> value, omitted?)
+
+      {:ok, :value, value} ->
+        do_render(rest, variables, arguments, acc <> prefix <> value, omitted?)
+
+      {:ok, :omitted} ->
+        do_render(rest, variables, arguments, acc <> prefix, true)
+
+      {:error, _reason} = error ->
+        error
     end
   end
 

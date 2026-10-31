@@ -33,21 +33,60 @@ defmodule PatchbayWeb.Layouts do
           }
 
           const PatchbayStream = {
+            BOTTOM_EDGE: 8,
             atBottom() {
-              return this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < 8
+              return this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight < this.BOTTOM_EDGE
             },
             follow() {
               this.el.scrollTop = this.el.scrollHeight
             },
             mounted() {
-              this.wasAtBottom = true
+              this.pinned = true
+              this.agentKey = this.el.dataset.streamAgent
+              this.observed = new WeakSet()
+              this.onScroll = () => {
+                this.pinned = this.atBottom()
+              }
+              this.onWheel = (event) => {
+                if (event.deltaY < 0 && this.el.scrollTop > 0) {
+                  this.pinned = false
+                }
+              }
+              this.ro = new ResizeObserver(() => {
+                if (this.pinned) {
+                  this.follow()
+                }
+              })
+              this.el.addEventListener("scroll", this.onScroll, {passive: true})
+              this.el.addEventListener("wheel", this.onWheel, {passive: true})
+              this.observeContent()
               this.follow()
-            },
-            beforeUpdate() {
-              this.wasAtBottom = this.atBottom()
+              window.requestAnimationFrame(() => this.sync())
             },
             updated() {
-              if (this.wasAtBottom) {
+              window.requestAnimationFrame(() => this.sync())
+            },
+            destroyed() {
+              this.ro.disconnect()
+              this.el.removeEventListener("scroll", this.onScroll)
+              this.el.removeEventListener("wheel", this.onWheel)
+            },
+            observeContent() {
+              this.ro.observe(this.el)
+              this.el.querySelectorAll(":scope > li").forEach((row) => {
+                if (!this.observed.has(row)) {
+                  this.observed.add(row)
+                  this.ro.observe(row)
+                }
+              })
+            },
+            sync() {
+              if (this.agentKey !== this.el.dataset.streamAgent) {
+                this.agentKey = this.el.dataset.streamAgent
+                this.pinned = true
+              }
+              this.observeContent()
+              if (this.pinned) {
                 this.follow()
               }
             }

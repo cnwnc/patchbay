@@ -16,6 +16,7 @@ defmodule Patchbay.Worker do
 
   alias Patchbay.Worker.Artifacts
   alias Patchbay.Worker.Env
+  alias Patchbay.Worker.Native
   alias Patchbay.Worker.Operations
   alias Patchbay.Worker.Protocol
   alias Patchbay.Worker.Protocol.Stream
@@ -197,17 +198,22 @@ defmodule Patchbay.Worker do
 
   defp execute_operation(operation, arguments, variables, timeout, state)
        when is_binary(operation) do
-    if Artifacts.reserved?(operation) do
-      Artifacts.read(artifact_roots(state), arguments)
-    else
-      Operations.execute(state.operations, operation, arguments,
-        workspace: state.workspace,
-        agent_id: state.worker_id,
-        variables: variables,
-        timeout: timeout,
-        max_output_bytes: state.max_output_bytes,
-        secret_names: state.secret_names
-      )
+    cond do
+      Artifacts.reserved?(operation) ->
+        Artifacts.read(artifact_roots(state), arguments)
+
+      Native.reserved?(operation) ->
+        Native.execute(operation, arguments)
+
+      true ->
+        Operations.execute(state.operations, operation, arguments,
+          workspace: state.workspace,
+          agent_id: state.worker_id,
+          variables: variables,
+          timeout: timeout,
+          max_output_bytes: state.max_output_bytes,
+          secret_names: state.secret_names
+        )
     end
   end
 

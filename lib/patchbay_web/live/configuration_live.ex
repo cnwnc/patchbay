@@ -1711,6 +1711,30 @@ defmodule PatchbayWeb.ConfigurationLive do
                 </fieldset>
 
                 <fieldset class="struct-group">
+                  <legend>WORKSPACE</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-workspace-enabled">ENABLED</label>
+                      <select
+                        id="structured-workspace-enabled"
+                        name="structured[workspace][enabled]"
+                      >
+                        <option
+                          :for={state <- Structured.workspace_states()}
+                          value={state}
+                          selected={@structured["workspace"]["enabled"] == state}
+                        >
+                          {if state == "", do: "DEFAULT (ON)", else: String.upcase(state)}
+                        </option>
+                      </select>
+                      <p class="panel-meta">
+                        Off allocates no workspace; &#123;%workspace&#125; becomes invalid for this agent.
+                      </p>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
                   <legend>TEARDOWN</legend>
                   <div class="struct-grid">
                     <div class="struct-field">
@@ -1852,14 +1876,14 @@ defmodule PatchbayWeb.ConfigurationLive do
                         class="struct-field"
                       >
                         <label for={"structured-toolkit-root-#{toolkit_index}"}>
-                          FILESYSTEM ROOT
+                          FILESYSTEM ROOT (SUPPORTS &#123;%WORKSPACE&#125; AND OTHER &#123;%VARIABLES&#125;; RELATIVE ROOTS RESOLVE UNDER THE CONFIG TREE)
                         </label>
                         <input
                           id={"structured-toolkit-root-#{toolkit_index}"}
                           name={"structured[toolkits][#{toolkit_index}][root]"}
                           type="text"
                           value={toolkit["root"]}
-                          placeholder="work"
+                          placeholder="&#123;%workspace&#125; or work"
                           autocomplete="off"
                           spellcheck="false"
                           phx-debounce="200"

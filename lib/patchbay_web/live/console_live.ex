@@ -848,7 +848,13 @@ defmodule PatchbayWeb.ConsoleLive do
               <span>DETAIL</span>
             </div>
 
-            <ol id="stream-list" class="stream-list" aria-live="polite" phx-hook="PatchbayStream">
+            <ol
+              id="stream-list"
+              class="stream-list"
+              aria-live="polite"
+              phx-hook="PatchbayStream"
+              data-stream-agent={@selected_agent.agent_id}
+            >
               <li :for={item <- @stream} :key={item.id} class={row_class(item)}>
                 <time class="row-time">{item.time}</time>
                 <span class="row-type">{row_type(item)}</span>

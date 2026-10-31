@@ -383,19 +383,23 @@ defmodule Patchbay.WorkerSupervisor do
 
   defp prepare_agent_paths(request, worker_id, state) do
     with {:ok, workspace} <-
-           prepare_agent_dir(
-             request,
-             :workspace,
-             worker_id,
-             state.workspace_root,
-             state.workspace
-           ),
+           prepare_workspace(request, worker_id, state),
          {:ok, result_dir} <-
            prepare_agent_dir(request, :result_dir, worker_id, state.result_root, nil),
          {:ok, state_dir} <-
            prepare_agent_dir(request, :state_dir, worker_id, state.state_root, nil) do
       {:ok, %{workspace: workspace, result_dir: result_dir, state_dir: state_dir}}
     end
+  end
+
+  # An agent definition may disable its workspace. The explicit flag keeps the
+  # default allocation from happening: no directory is created, the worker
+  # spawns without a workspace, and `{%workspace}` operations fail.
+  defp prepare_workspace(%{workspace_disabled: true} = _request, _worker_id, _state),
+    do: {:ok, nil}
+
+  defp prepare_workspace(request, worker_id, state) do
+    prepare_agent_dir(request, :workspace, worker_id, state.workspace_root, state.workspace)
   end
 
   defp prepare_agent_dir(request, key, worker_id, root, fallback) do

@@ -130,6 +130,7 @@ defmodule Patchbay.Runtime do
   alias Patchbay.ToolHistory
   alias Patchbay.ToolHistory.Writer
   alias Patchbay.Toolkit.{Hooks, Manifest, Registry, Variables}
+  alias Patchbay.Definition.Workspace
   alias Patchbay.Transcript
   alias Patchbay.Worker.Operations
 
@@ -1033,7 +1034,7 @@ defmodule Patchbay.Runtime do
          {:ok, operations} <- resolved_operations(definition),
          {:ok, secret_values} <- resolve_secret_env(state, definition),
          {:ok, worker_id} <- worker_id_for(agent_id),
-         {:ok, dirs} <- ensure_agent_dirs(state, agent_id) do
+         {:ok, dirs} <- ensure_agent_dirs(state, agent_id, definition) do
       {revision, fingerprint} =
         next_revision(agent, definition, source_revision, source_fingerprint)
 
@@ -1084,12 +1085,17 @@ defmodule Patchbay.Runtime do
               in_flight_tools: MapSet.new(),
               context_generation: next_context_generation(),
               terminal_result: nil,
-              terminal_failure: nil
+              terminal_failure: nil,
+              finalize_state: nil
           }
 
           state = put_agent(state, agent)
           state = emit_activation(state, agent, run, attempt, recovery)
           state = record_context_run(state, agent, :started)
+          # Remember the values before the worker exists: a failed start still
+          # writes an error event and runs finalize hooks, and both must be
+          # redacted. fail_start forgets them once it is done.
+          state = remember_secret_values(state, agent.id, secret_values)
           finish_start(state, agent, run, attempt, operations, secret_values, opts)
 
         {:error, reason} ->
@@ -1104,12 +1110,9 @@ defmodule Patchbay.Runtime do
     client = state.worker_client
 
     opts =
-      [
-        timeout: timeout,
-        operations: operations,
-        workspace: agent.workspace,
-        result_dir: agent.result_dir
-      ]
+      [timeout: timeout, operations: operations, workspace: agent.workspace]
+      |> maybe_put_workspace_disabled(Workspace.enabled?(agent.definition))
+      |> maybe_put_result_dir(agent)
       |> maybe_put_secrets(secrets)
 
     case safe_worker_call(fn ->
@@ -1139,8 +1142,6 @@ defmodule Patchbay.Runtime do
 
     case started do
       {:ok, _info} ->
-        state = remember_secret_values(state, agent.id, secret_values)
-
         case safe_worker_call(fn ->
                client.await_worker(state.manager, agent.worker_id, await_timeout)
              end) do
@@ -1168,29 +1169,31 @@ defmodule Patchbay.Runtime do
                     {:ok, summarize(agent), state}
 
                   {:error, reason, state} ->
-                    stop_worker_best_effort(state, agent)
                     fail_start(state, agent, run, attempt, :lifecycle_init, reason)
                 end
 
               {:error, reason} ->
-                stop_worker_best_effort(state, agent)
                 fail_start(state, agent, run, attempt, :instance_ready, reason)
             end
 
           {:error, reason} ->
-            stop_worker_best_effort(state, agent)
             fail_start(state, agent, run, attempt, :worker_ready, reason)
         end
 
       {:error, reason} ->
-        stop_worker_best_effort(state, agent)
         fail_start(state, agent, run, attempt, :worker_start, reason)
     end
   end
 
+  # A failed start still runs finalize hooks and then tears the worker down,
+  # in that order: hooks travel the worker protocol, so the worker must exist
+  # while they run. The secret values stay in state until both the error
+  # record and the finalize hooks are written, so their outputs are redacted;
+  # they are forgotten on the way out.
   defp fail_start(state, agent, run, attempt, stage, reason) do
-    state = forget_secret_values(state, agent.id)
-    reason = {stage, reason}
+    reason =
+      {stage, reason}
+      |> Redact.redact(agent_secret_values(state, agent.id))
 
     lifecycle =
       case Lifecycle.interrupt(agent.lifecycle, reason, now()) do
@@ -1198,10 +1201,12 @@ defmodule Patchbay.Runtime do
         {:error, _reason} -> agent.lifecycle
       end
 
+    agent = %{agent | lifecycle: lifecycle}
+    hook_agent = agent
+
     agent = %{
       agent
-      | lifecycle: lifecycle,
-        status: :failed,
+      | status: :failed,
         worker_id: nil,
         last_error: reason
     }
@@ -1215,7 +1220,9 @@ defmodule Patchbay.Runtime do
         run_attrs(run, attempt, %{stage: stage, reason: reason})
       )
 
-    state = finalize_hooks(state, agent, run, attempt)
+    state = finalize_once(state, hook_agent, run, attempt)
+    stop_worker_best_effort(state, hook_agent)
+    state = forget_secret_values(state, agent.id)
     state = record_context_run(state, agent, :interrupted)
     {:error, reason, state}
   end
@@ -1238,12 +1245,20 @@ defmodule Patchbay.Runtime do
           reason = Keyword.get(opts, :reason, :operator_stop)
           timeout = Keyword.get(opts, :timeout, @default_timeout)
 
+          attempt = active_attempt(agent)
+
+          # Finalize hooks run before the worker is stopped: they execute in
+          # the worker that owns the workspace, and the manager cannot reach
+          # it once the stop completes. The completed phase is recorded first,
+          # so a stop that fails and is retried does not run them twice.
+          state = finalize_once(state, agent, lifecycle_run(agent), attempt)
+          agent = Map.fetch!(state.agents, agent_id)
+
           case stop_worker(state, agent, timeout) do
             :ok ->
               state = stop_runner(state, agent)
               state = forget_secret_values(state, agent_id)
               agent = Map.fetch!(state.agents, agent_id)
-              attempt = active_attempt(agent)
               lifecycle = stop_lifecycle(agent.lifecycle, reason, now())
               run = lifecycle && Lifecycle.current_run(lifecycle)
 
@@ -1261,8 +1276,6 @@ defmodule Patchbay.Runtime do
               state =
                 state
                 |> put_agent(agent)
-
-              state = finalize_hooks(state, agent, run, attempt)
 
               state =
                 emit(
@@ -1612,6 +1625,8 @@ defmodule Patchbay.Runtime do
     run = lifecycle_run(agent)
     agent = %{agent | publisher: nil, stop_waiter: nil, status: :running, activity: :idle}
     state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
+    # Finalize hooks run before the worker is stopped; see do_stop.
+    state = finalize_once(state, agent, run, attempt)
     stop_worker_best_effort(state, agent)
     state = forget_secret_values(state, agent.id)
 
@@ -1634,7 +1649,6 @@ defmodule Patchbay.Runtime do
     }
 
     state = put_agent(state, agent)
-    state = finalize_hooks(state, agent, run, attempt)
 
     state =
       emit(
@@ -2168,6 +2182,8 @@ defmodule Patchbay.Runtime do
     attempt = active_attempt(agent)
     run = lifecycle_run(agent)
     state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
+    # Finalize hooks run before the worker is stopped; see do_stop.
+    state = finalize_once(state, agent, run, attempt)
     stop_worker_best_effort(state, agent)
     state = forget_secret_values(state, agent.id)
     results = apply_result_warnings(results, outcomes)
@@ -2203,8 +2219,6 @@ defmodule Patchbay.Runtime do
       state
       |> put_agent(agent)
 
-    state = finalize_hooks(state, agent, run, attempt)
-
     state =
       emit(
         state,
@@ -2218,6 +2232,8 @@ defmodule Patchbay.Runtime do
 
   defp fail_run(state, agent, reason) do
     attempt = active_attempt(agent)
+    # Finalize hooks run before the worker is stopped; see do_stop.
+    state = finalize_once(state, agent, lifecycle_run(agent), attempt)
     stop_worker_best_effort(state, agent)
     state = forget_secret_values(state, agent.id)
 
@@ -2251,8 +2267,6 @@ defmodule Patchbay.Runtime do
     state =
       state
       |> put_agent(agent)
-
-    state = finalize_hooks(state, agent, run, attempt)
 
     state =
       emit(
@@ -2414,23 +2428,23 @@ defmodule Patchbay.Runtime do
   defp execute_declared(
          state,
          agent,
-         %{kind: :native, module: module},
+         %{kind: :native, module: module} = declared,
          tool_name,
          arguments,
-         _timeout,
+         timeout,
          run,
          attempt
        ) do
-    context = %{
-      definition: agent.definition,
-      agent_id: agent.id,
-      state_dir: state.state_dir,
-      runtime_dir: state.runtime_dir,
-      variables: variables(state, agent, run, attempt)
-    }
+    context =
+      native_context(state, agent, run, attempt)
+      |> Map.put(:config, Map.get(declared, :config) || %{})
 
-    safe_worker_call(fn -> Registry.execute(module, tool_name, arguments, context) end)
-    |> normalize_native_result()
+    if worker_native?(module) do
+      execute_in_worker(state, agent, module, tool_name, arguments, timeout, context)
+    else
+      safe_worker_call(fn -> Registry.execute(module, tool_name, arguments, context) end)
+      |> normalize_native_result()
+    end
   end
 
   defp execute_declared(state, agent, _declared, tool_name, arguments, timeout, run, attempt) do
@@ -2444,6 +2458,47 @@ defmodule Patchbay.Runtime do
         variables: variables(state, agent, run, attempt)
       )
     end)
+  end
+
+  defp native_context(state, agent, run, attempt) do
+    %{
+      definition: agent.definition,
+      agent_id: agent.id,
+      config_root: Map.get(agent.definition, :config_root),
+      state_dir: state.state_dir,
+      runtime_dir: state.runtime_dir,
+      variables: variables(state, agent, run, attempt)
+    }
+  end
+
+  # Native toolkits that export a worker operation run in the agent worker.
+  # The manager renders and checks the request, but never traverses the
+  # agent-owned tree, so a symlink the agent controls cannot redirect it into
+  # manager state.
+  defp worker_native?(module) when is_atom(module) and not is_nil(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :worker_operation, 0) and
+      function_exported?(module, :worker_request, 3) and
+      function_exported?(module, :worker_result, 1)
+  end
+
+  defp worker_native?(_module), do: false
+
+  defp execute_in_worker(state, agent, module, tool_name, arguments, timeout, context) do
+    with {:ok, worker_id} <- worker_id(agent) do
+      safe_worker_call(fn ->
+        with {:ok, request} <- module.worker_request(tool_name, arguments, context) do
+          state.worker_client.execute(
+            state.manager,
+            worker_id,
+            module.worker_operation(),
+            request,
+            timeout: timeout,
+            variables: context.variables
+          )
+        end
+      end)
+      |> module.worker_result()
+    end
   end
 
   defp normalize_native_result({:ok, %{} = result}) do
@@ -2473,14 +2528,8 @@ defmodule Patchbay.Runtime do
     )
   end
 
-  defp agent_workspace(state, agent), do: Map.get(agent, :workspace) || state.workspace_dir
+  defp agent_workspace(_state, agent), do: Map.get(agent, :workspace, nil)
   defp agent_result_dir(state, agent), do: Map.get(agent, :result_dir) || state.result_dir
-
-  defp existing_directory(path) when is_binary(path) do
-    if File.dir?(path), do: path, else: nil
-  end
-
-  defp existing_directory(_path), do: nil
 
   defp finalize_hooks(state, agent, run, attempt) do
     case run_hooks(state, agent, :finalize, run, attempt) do
@@ -2489,64 +2538,105 @@ defmodule Patchbay.Runtime do
     end
   end
 
-  defp run_hooks(state, agent, phase, run, attempt) do
-    lifecycle = Map.get(agent.definition, :lifecycle)
+  # Finalize hooks run at most once per run, and always before the worker is
+  # stopped. Recording the completed phase keeps a failed worker stop from
+  # running cleanup again when the operator retries.
+  defp finalize_once(state, agent, run, attempt) do
+    case Map.fetch(state.agents, agent.id) do
+      {:ok, %{finalize_state: :done}} ->
+        state
 
-    case Hooks.expand(lifecycle, phase, variables(state, agent, run, attempt)) do
-      {:ok, hooks} ->
-        Enum.reduce_while(hooks, {:ok, state}, fn hook, {:ok, state} ->
+      {:ok, stored} ->
+        state = finalize_hooks(state, agent, run, attempt)
+        put_agent(state, Map.put(stored, :finalize_state, :done))
+
+      :error ->
+        state
+    end
+  end
+
+  # Hooks run inside the agent worker as fixed operations. The worker owns
+  # the agent workspace, so init and finalize hooks write agent-owned files
+  # across the UID boundary; the manager only relays the execute request.
+  defp run_hooks(state, agent, phase, run, attempt) do
+    entries = hook_plan(state, agent, phase)
+
+    Enum.reduce_while(entries, {:ok, state}, fn entry, {:ok, state} ->
+      name = entry.declared
+
+      state =
+        emit(
+          state,
+          agent.id,
+          :hook_started,
+          run_attrs(run, attempt, %{phase: phase, hook: name})
+        )
+
+      case execute_hook(state, agent, entry, run, attempt) do
+        {:ok, result} ->
           state =
             emit(
               state,
               agent.id,
-              :hook_started,
-              run_attrs(run, attempt, %{phase: phase, hook: hook.name})
+              :hook_finished,
+              run_attrs(run, attempt, %{
+                phase: phase,
+                hook: name,
+                output: Map.get(result, :output, "")
+              })
             )
 
-          case Hooks.execute(hook,
-                 timeout: Map.get(state, :hook_timeout, @default_hook_timeout),
-                 cd: existing_directory(agent_workspace(state, agent))
-               ) do
-            {:ok, result} ->
-              state =
-                emit(
-                  state,
-                  agent.id,
-                  :hook_finished,
-                  run_attrs(run, attempt, %{
-                    phase: phase,
-                    hook: hook.name,
-                    output: result.output
-                  })
-                )
+          {:cont, {:ok, state}}
 
-              {:cont, {:ok, state}}
+        {:error, reason} ->
+          state =
+            emit(
+              state,
+              agent.id,
+              :hook_failed,
+              run_attrs(run, attempt, %{phase: phase, hook: name, reason: reason})
+            )
 
-            {:error, reason} ->
-              state =
-                emit(
-                  state,
-                  agent.id,
-                  :hook_failed,
-                  run_attrs(run, attempt, %{phase: phase, hook: hook.name, reason: reason})
-                )
+          {:halt, {:error, {name, reason}, state}}
+      end
+    end)
+  end
 
-              {:halt, {:error, {hook.name, reason}, state}}
-          end
-        end)
+  defp hook_plan(_state, agent, phase) do
+    reserved =
+      agent.definition
+      |> Map.get(:toolkits, [])
+      |> Enum.flat_map(&Map.get(&1, :operations, []))
+      |> declared_names()
 
-      {:error, {name, reason}} ->
-        state =
-          emit(
-            state,
-            agent.id,
-            :hook_failed,
-            run_attrs(run, attempt, %{phase: phase, hook: name, reason: reason})
-          )
+    Hooks.plan(Map.get(agent.definition, :lifecycle), reserved)
+    |> Map.fetch!(phase)
+  end
 
-        {:error, {name, reason}, state}
+  defp execute_hook(state, agent, entry, run, attempt) do
+    if is_nil(agent.worker_id) do
+      {:error, :worker_unavailable}
+    else
+      safe_worker_call(fn ->
+        state.worker_client.execute(
+          state.manager,
+          agent.worker_id,
+          entry.worker_name,
+          %{},
+          timeout: Map.get(state, :hook_timeout, @default_hook_timeout),
+          variables: variables(state, agent, run, attempt)
+        )
+      end)
+      |> hook_outcome()
     end
   end
+
+  defp hook_outcome({:ok, %{status: :error} = result}) do
+    {:error, {:exit_status, Map.get(result, :exit_status), Map.get(result, :output, "")}}
+  end
+
+  defp hook_outcome({:ok, result}), do: {:ok, result}
+  defp hook_outcome({:error, reason}), do: {:error, reason}
 
   defp record_tool_history(state, agent, declared, tool_name, arguments, result, event_id) do
     path = Path.join(tool_history_dir(state.state_dir), agent.id <> ".pbth")
@@ -3093,6 +3183,7 @@ defmodule Patchbay.Runtime do
       context_generation: next_context_generation(),
       terminal_result: nil,
       terminal_failure: nil,
+      finalize_state: nil,
       publisher: nil,
       stop_waiter: nil
     }
@@ -3196,7 +3287,8 @@ defmodule Patchbay.Runtime do
                    toolkit_id: toolkit_id,
                    kind: :native,
                    module: module,
-                   native_tool: tool
+                   native_tool: tool,
+                   config: Map.get(toolkit, :config) || %{}
                  }}
               end)
           end
@@ -3234,7 +3326,8 @@ defmodule Patchbay.Runtime do
            toolkit_id: manifest.name,
            kind: :native,
            module: module,
-           native_tool: tool
+           native_tool: tool,
+           config: Map.get(manifest, :config) || %{}
          }}
       end)
     end)
@@ -3329,6 +3422,19 @@ defmodule Patchbay.Runtime do
     end
   end
 
+  defp maybe_put_result_dir(opts, agent) do
+    case Map.get(agent, :result_dir) do
+      nil -> opts
+      result_dir -> Keyword.put(opts, :result_dir, result_dir)
+    end
+  end
+
+  # The manager relays an explicit "no workspace" flag so the supervisor does
+  # not allocate its default workspace directory for an agent that disabled
+  # its workspace.
+  defp maybe_put_workspace_disabled(opts, false), do: Keyword.put(opts, :workspace_disabled, true)
+  defp maybe_put_workspace_disabled(opts, _enabled), do: opts
+
   defp maybe_put_secrets(opts, secrets) when map_size(secrets) == 0, do: opts
   defp maybe_put_secrets(opts, secrets), do: Keyword.put(opts, :secrets, secrets)
 
@@ -3347,15 +3453,24 @@ defmodule Patchbay.Runtime do
   end
 
   defp resolved_operations(definition) do
-    definition
-    |> Map.get(:toolkits, [])
-    |> Enum.flat_map(&Map.get(&1, :operations, []))
-    |> first_of_each_name()
+    declared =
+      definition
+      |> Map.get(:toolkits, [])
+      |> Enum.flat_map(&Map.get(&1, :operations, []))
+      |> first_of_each_name()
+
+    hooks_plan = Hooks.plan(Map.get(definition, :lifecycle), declared_names(declared))
+
+    (declared ++ hooks_plan.operations)
     |> Operations.from_definition()
     |> case do
       {:ok, operations} -> {:ok, operations}
       {:error, reason} -> {:error, {:invalid_operations, reason}}
     end
+  end
+
+  defp declared_names(operations) do
+    operations |> Enum.map(&Map.get(&1, :name)) |> Enum.reject(&is_nil/1)
   end
 
   defp first_of_each_name(operations) do
@@ -3373,10 +3488,14 @@ defmodule Patchbay.Runtime do
     Enum.reverse(kept)
   end
 
-  defp ensure_agent_dirs(state, agent_id) do
+  # The result and state directories are always allocated. The workspace is
+  # allocated only for definitions that enable it; a disabled workspace stays
+  # nil, so `{%workspace}` renders as unavailable instead of silently pointing
+  # somewhere else.
+  defp ensure_agent_dirs(state, agent_id, definition) do
     if Event.valid_agent_id?(agent_id) do
       dirs = %{
-        workspace: Path.join(state.workspace_dir, agent_id),
+        workspace: workspace_dir(state, agent_id, definition),
         result_dir: Path.join(state.result_dir, agent_id),
         state_dir: Path.join([state.state_dir, "agents", agent_id])
       }
@@ -3389,6 +3508,12 @@ defmodule Patchbay.Runtime do
     else
       {:error, {:invalid_agent_id, agent_id}}
     end
+  end
+
+  defp workspace_dir(state, agent_id, definition) do
+    if Workspace.enabled?(definition),
+      do: Path.join(state.workspace_dir, agent_id),
+      else: nil
   end
 
   defp tool_history_dir(state_dir), do: Path.join(state_dir, "tool-history")

@@ -207,6 +207,7 @@ defmodule Patchbay.CLI.Manager do
          :ok <- ensure_control_connected(state),
          :ok <- ensure_worker_absent(worker_id, state),
          {:ok, workspace} <- optional_absolute_path(opts, :workspace),
+         :ok <- workspace_disabled(opts, workspace),
          {:ok, result_dir} <- optional_absolute_path(opts, :result_dir),
          {:ok, state_dir} <- optional_absolute_path(opts, :state_dir),
          {:ok, secrets} <- validate_secrets(opts),
@@ -244,6 +245,7 @@ defmodule Patchbay.CLI.Manager do
          }
          |> maybe_put_message(:operations, operations)
          |> maybe_put_message(:workspace, workspace)
+         |> maybe_put_message(:workspace_disabled, workspace_disabled(opts))
          |> maybe_put_message(:result_dir, result_dir)
          |> maybe_put_message(:state_dir, state_dir)
          |> maybe_put_message(:secrets, secrets)}
@@ -668,6 +670,20 @@ defmodule Patchbay.CLI.Manager do
         {:error, path_error(key, path)}
     end
   end
+
+  # A definition may disable its workspace. The flag travels to the supervisor
+  # so it does not allocate a default workspace directory, and neither request
+  # flag nor path may be missing when the other is present.
+  defp workspace_disabled(opts, workspace) do
+    disabled = Keyword.get(opts, :workspace_disabled) == true
+
+    cond do
+      disabled and is_binary(workspace) -> {:error, :invalid_workspace}
+      true -> :ok
+    end
+  end
+
+  defp workspace_disabled(opts), do: Keyword.get(opts, :workspace_disabled) == true
 
   defp path_error(:workspace, path), do: {:invalid_workspace, path}
   defp path_error(:result_dir, path), do: {:invalid_result_dir, path}
