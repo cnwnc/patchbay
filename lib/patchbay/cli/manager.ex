@@ -20,6 +20,7 @@ defmodule Patchbay.CLI.Manager do
   alias Patchbay.Secrets.Redact
   alias Patchbay.Transcript
   alias Patchbay.Worker.Operations
+  alias Patchbay.Worker.Nix
   alias Patchbay.Worker.Protocol
   alias Patchbay.Worker.Protocol.Stream
   alias Patchbay.Worker.Token
@@ -211,6 +212,7 @@ defmodule Patchbay.CLI.Manager do
          {:ok, result_dir} <- optional_absolute_path(opts, :result_dir),
          {:ok, state_dir} <- optional_absolute_path(opts, :state_dir),
          {:ok, secrets} <- validate_secrets(opts),
+         {:ok, packages} <- validate_packages(opts),
          {:ok, operations} <- validate_operations(opts) do
       token = Token.generate()
       request_id = Token.generate()
@@ -248,6 +250,7 @@ defmodule Patchbay.CLI.Manager do
          |> maybe_put_message(:workspace_disabled, workspace_disabled(opts))
          |> maybe_put_message(:result_dir, result_dir)
          |> maybe_put_message(:state_dir, state_dir)
+         |> maybe_put_message(:packages, packages)
          |> maybe_put_message(:secrets, secrets)}
 
       case Control.send_message(state.control_socket, message) do
@@ -711,6 +714,14 @@ defmodule Patchbay.CLI.Manager do
           :ok -> {:ok, nil}
           {:error, reason} -> {:error, {:invalid_secrets, reason}}
         end
+    end
+  end
+
+  defp validate_packages(opts) do
+    case Nix.normalize_packages(Keyword.get(opts, :packages, [])) do
+      {:ok, []} -> {:ok, nil}
+      {:ok, normalized} -> {:ok, normalized}
+      {:error, :invalid_packages} -> {:error, :invalid_packages}
     end
   end
 

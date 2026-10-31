@@ -652,7 +652,8 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
              "YES"
            )
 
-    assert render(view) =~ "ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)"
+    assert render(view) =~ ">ARGUMENTS<"
+    refute render(view) =~ "EXECUTABLE IS SEPARATE"
 
     values_text =
       view

@@ -1240,7 +1240,7 @@ defmodule PatchbayWeb.ConfigurationLive do
       </div>
 
       <div class="struct-field">
-        <label>ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)</label>
+        <label>ARGUMENTS</label>
         <textarea
           name={"structured[lifecycle][#{@kind}][#{index}][argv]"}
           rows="3"
@@ -1702,9 +1702,7 @@ defmodule PatchbayWeb.ConfigurationLive do
                   <legend>ENVIRONMENT</legend>
                   <div class="struct-grid">
                     <div class="struct-field">
-                      <label for="structured-environment-packages">
-                        NIX PACKAGES (ONE PER LINE; RETAINED, NOT YET INSTALLED)
-                      </label>
+                      <label for="structured-environment-packages">NIX PACKAGES</label>
                       <textarea
                         id="structured-environment-packages"
                         name="structured[environment][packages]"
@@ -2002,7 +2000,7 @@ defmodule PatchbayWeb.ConfigurationLive do
                       </div>
 
                       <div class="struct-field">
-                        <label>ARGUMENTS (ONE PER LINE; EXECUTABLE IS SEPARATE)</label>
+                        <label>ARGUMENTS</label>
                         <textarea
                           name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][argv]"}
                           rows="3"

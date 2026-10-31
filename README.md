@@ -30,11 +30,7 @@ nix build .#default
 nix run .#default -- help
 ```
 
-Operations and lifecycle hooks may use bare executable names such as `git`. They are resolved on the worker's `PATH` when the operation runs, so packages that should be visible to workers belong on the worker supervisor's path:
-
-```nix
-services.patchbay.workerSupervisor.packages = [ pkgs.git ];
-```
+Operations and lifecycle hooks may use bare executable names such as `git`. They are resolved on the worker's `PATH` when the operation runs. Each agent declares the packages its worker should have in `[environment] packages`; the supervisor starts a worker with a non-empty list as `nix shell <refs> --command <patchbay> run-worker ...`, so the worker and every operation or hook child inherit that shell's `PATH`. Simple package names are prefixed with `nixpkgs#`, and refs containing `#`, `:`, or a path prefix are passed through as written. The host Nix registry and daemon configuration are used.
 
 The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`).
 
@@ -100,7 +96,7 @@ Unknown top-level keys and unknown keys in most tables are ignored. Validation e
 | `id` | string | yes | Agent identifier. Non-empty, not `.` or `..`, no `/` or `\`, and equal to the agent directory name when loading from disk. |
 | `model` | table | yes | Provider model selection. |
 | `lifecycle` | table | yes | Activation mode and hooks. |
-| `environment` | table | no | Declared Nix packages. Currently validated and retained only. |
+| `environment` | table | no | Nix packages made available to the worker. |
 | `toolkits` | array of tables | no | Toolkit instances and manifest references. |
 | `operations` | array of tables | no | Shorthand for one implicit `fixed` toolkit. |
 | `context` | table | no | Context recovery and compaction policy. |
@@ -148,7 +144,9 @@ Hooks run without a shell as fixed operations inside the agent worker, with the 
 
 | Key | Type | Required | Default | Meaning |
 | --- | --- | --- | --- | --- |
-| `packages` | array of strings | no | `[]` | Non-empty package names, must be unique. Accepted and retained on the definition; no worker package installation or environment composition currently consumes this list. |
+| `packages` | array of strings | no | `[]` | Non-empty Nix package names or flake refs, must be unique. A non-empty list starts the worker inside `nix shell`; simple names are read as `nixpkgs#<name>`. See below. |
+
+A worker with no packages starts directly. With a non-empty list, the worker supervisor runs `nix shell <refs> --command <absolute patchbay> run-worker ...` using an argv list, not a shell string. Simple names such as `git` become `nixpkgs#git`; refs containing `#`, `:`, or a path prefix (`/`, `./`, `../`, `~/`) are passed through unchanged. The supervisor uses the host Nix registry and daemon configuration. The worker process and every operation and lifecycle hook it starts inherit the `nix shell` `PATH`, so bare executable names resolve from those packages.
 
 ### `[[toolkits]]`
 
@@ -601,7 +599,6 @@ Accepted declarations with no runtime effect beyond validation, storage, or mana
 
 | Declaration | Behavior |
 | --- | --- |
-| `[environment] packages` | Validated and retained. No package installation or worker environment composition. |
 | `[model] provider` | Validated and retained. Provider selection uses the manager's configured provider module. |
 | `[model] reasoning` | Validated and retained. Not forwarded to the provider. |
 | `[teardown] workspace` | Validated and retained. No retain, export, or destroy action runs after a result. |

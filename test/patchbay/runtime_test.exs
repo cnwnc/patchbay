@@ -917,6 +917,34 @@ defmodule Patchbay.RuntimeTest do
     refute Keyword.has_key?(beta_opts, :secrets)
   end
 
+  test "starts a worker with the agent's environment packages", context do
+    {:ok, definition} =
+      Patchbay.Definition.parse("""
+      format-version = 1
+      id = "alpha"
+
+      [model]
+      name = "test-model"
+
+      [lifecycle]
+      kind = "one-shot"
+
+      [environment]
+      packages = ["git", "nixpkgs#ripgrep"]
+      """)
+
+    Definitions.put(definition)
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+
+    assert [start | _rest] =
+             Enum.filter(Manager.calls(context.stub), &match?({:start_worker, _, _}, &1))
+
+    {:start_worker, "agent.alpha", opts} = start
+    assert opts[:packages] == ["git", "nixpkgs#ripgrep"]
+  end
+
   test "does not resolve the secret store for an agent without declarations", context do
     Definitions.put(definition("alpha"))
     runtime = start_runtime(context)

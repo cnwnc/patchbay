@@ -1113,6 +1113,7 @@ defmodule Patchbay.Runtime do
       [timeout: timeout, operations: operations, workspace: agent.workspace]
       |> maybe_put_workspace_disabled(Workspace.enabled?(agent.definition))
       |> maybe_put_result_dir(agent)
+      |> maybe_put_packages(agent.definition.environment.packages)
       |> maybe_put_secrets(secrets)
 
     case safe_worker_call(fn ->
@@ -3437,6 +3438,9 @@ defmodule Patchbay.Runtime do
 
   defp maybe_put_secrets(opts, secrets) when map_size(secrets) == 0, do: opts
   defp maybe_put_secrets(opts, secrets), do: Keyword.put(opts, :secrets, secrets)
+
+  defp maybe_put_packages(opts, []), do: opts
+  defp maybe_put_packages(opts, packages), do: Keyword.put(opts, :packages, packages)
 
   defp remember_secret_values(state, _agent_id, values) when map_size(values) == 0, do: state
 

@@ -5,13 +5,18 @@ defmodule Patchbay.WorkerSupervisor do
   The supervisor listens on a loopback TCP control channel for one or more
   managers. A manager may ask it to start or stop a worker. The supervisor
   chooses the executable and argv itself; requests cannot supply a command or
-  shell string. A start request may carry one explicit secret map of
-  environment variable name to value. Names are validated and only that
-  worker receives the values; secret values never appear in argv or logs.
+  shell string. A start request may carry the agent's package list, which the
+  supervisor validates and turns into a `nix shell` invocation around the
+  configured worker executable. A start request may also carry one explicit
+  secret map of environment variable name to value. Names are validated and
+  only that worker receives the values; secret values never appear in argv or
+  logs.
 
   Each worker is a separate OS process started with
   `Port.open({:spawn_executable, path}, args: argv)`, so no shell parses the
-  arguments. Worker stdout/stderr is captured only for diagnostics.
+  arguments. With packages, `path` is the Nix client and the worker executable
+  follows `--command`. Worker stdout/stderr is captured for diagnostics and a
+  bounded tail is reported with the worker exit.
   """
 
   use GenServer
@@ -20,6 +25,7 @@ defmodule Patchbay.WorkerSupervisor do
 
   alias Patchbay.Worker.Env
   alias Patchbay.Worker.Exec
+  alias Patchbay.Worker.Nix
   alias Patchbay.Worker.Operations
   alias Patchbay.Worker.ProcessGroup
   alias Patchbay.Worker.Protocol
@@ -35,6 +41,7 @@ defmodule Patchbay.WorkerSupervisor do
   @token_max 512
   @default_max_workers 64
   @max_workers_limit 1024
+  @max_diagnostic_output 8_192
 
   def start_link(opts \\ []) do
     gen_opts =
@@ -122,6 +129,7 @@ defmodule Patchbay.WorkerSupervisor do
          control_token: control_token,
          worker_executable: executable,
          worker_args: Keyword.get(opts, :worker_args, ["run-worker"]),
+         nix_executable: Keyword.get(opts, :nix_executable),
          operations_path: Keyword.get(opts, :operations_path),
          workspace: Keyword.get(opts, :workspace),
          workspace_root: workspace_root,
@@ -177,11 +185,15 @@ defmodule Patchbay.WorkerSupervisor do
   def handle_info({:tcp, _socket, _data}, state), do: {:noreply, state}
 
   def handle_info({port, {:data, data}}, state) when is_port(port) do
-    if Map.has_key?(state.port_to_worker, port) do
-      Logger.debug(fn ->
-        "worker port output: #{inspect(binary_part(data, 0, min(byte_size(data), 2048)))}"
-      end)
-    end
+    state =
+      case Map.fetch(state.port_to_worker, port) do
+        {:ok, worker_id} -> append_worker_output(state, worker_id, data)
+        :error -> state
+      end
+
+    Logger.debug(fn ->
+      "worker port output: #{inspect(binary_part(data, 0, min(byte_size(data), 2048)))}"
+    end)
 
     {:noreply, state}
   end
@@ -243,6 +255,7 @@ defmodule Patchbay.WorkerSupervisor do
          {:ok, manager_port} <- manager_port(request),
          :ok <- check_worker_slot(worker_id, state),
          {:ok, secrets} <- worker_secrets(request),
+         {:ok, packages} <- worker_packages(request),
          {:ok, paths} <- prepare_agent_paths(request, worker_id, state),
          {:ok, operations_path} <- prepare_operations(request, worker_id, paths, state) do
       case start_worker_process(
@@ -254,6 +267,7 @@ defmodule Patchbay.WorkerSupervisor do
              paths.workspace,
              paths.result_dir,
              secrets,
+             packages,
              state
            ) do
         {:ok, worker} ->
@@ -380,6 +394,13 @@ defmodule Patchbay.WorkerSupervisor do
   end
 
   defp worker_secrets(_request), do: {:ok, %{}}
+
+  defp worker_packages(request) do
+    case Map.get(request, :packages) do
+      nil -> {:ok, []}
+      packages -> Nix.normalize_packages(packages)
+    end
+  end
 
   defp prepare_agent_paths(request, worker_id, state) do
     with {:ok, workspace} <-
@@ -525,6 +546,7 @@ defmodule Patchbay.WorkerSupervisor do
          workspace,
          result_dir,
          secrets,
+         packages,
          state
        ) do
     instance = Token.generate()
@@ -556,42 +578,45 @@ defmodule Patchbay.WorkerSupervisor do
         secrets
       )
 
-    {spawn_executable, spawn_args} =
-      ProcessGroup.command(state.worker_executable, args)
+    with {:ok, {spawn_executable, spawn_args}} <-
+           Nix.command(packages, state.worker_executable, args,
+             nix_executable: state.nix_executable
+           ) do
+      port_options =
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          :hide,
+          {:args, Enum.map(spawn_args, &to_charlist/1)},
+          {:env, env}
+        ] ++ cd_option(state.worker_cd || workspace)
 
-    port_options =
-      [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        :hide,
-        {:args, Enum.map(spawn_args, &to_charlist/1)},
-        {:env, env}
-      ] ++ cd_option(state.worker_cd || workspace)
+      try do
+        port = Port.open({:spawn_executable, to_charlist(spawn_executable)}, port_options)
 
-    try do
-      port = Port.open({:spawn_executable, to_charlist(spawn_executable)}, port_options)
+        os_pid =
+          case Port.info(port, :os_pid) do
+            {:os_pid, pid} -> pid
+            _ -> nil
+          end
 
-      os_pid =
-        case Port.info(port, :os_pid) do
-          {:os_pid, pid} -> pid
-          _ -> nil
-        end
+        Process.unlink(port)
+        monitor = :erlang.monitor(:port, port)
 
-      Process.unlink(port)
-      monitor = :erlang.monitor(:port, port)
-
-      {:ok,
-       %{
-         port: port,
-         os_pid: os_pid,
-         monitor: monitor,
-         token: token,
-         instance: instance,
-         group: ProcessGroup.group_leader?(os_pid)
-       }}
-    rescue
-      _error -> {:error, :worker_spawn_failed}
+        {:ok,
+         %{
+           port: port,
+           os_pid: os_pid,
+           monitor: monitor,
+           token: token,
+           instance: instance,
+           output: "",
+           group: ProcessGroup.group_leader?(os_pid)
+         }}
+      rescue
+        _error -> {:error, :worker_spawn_failed}
+      end
     end
   end
 
@@ -613,6 +638,7 @@ defmodule Patchbay.WorkerSupervisor do
         state
 
       {worker, workers} ->
+        status = put_diagnostic_output(status, worker)
         stop_worker_process(worker)
         :erlang.demonitor(worker.monitor, [:flush])
         remove_worker_operations(worker, state)
@@ -622,6 +648,29 @@ defmodule Patchbay.WorkerSupervisor do
         %{state | workers: workers, port_to_worker: port_to_worker}
     end
   end
+
+  defp append_worker_output(state, worker_id, data) do
+    case Map.fetch(state.workers, worker_id) do
+      {:ok, worker} ->
+        output = keep_output_tail(worker.output <> data, @max_diagnostic_output)
+        worker = %{worker | output: output}
+        %{state | workers: Map.put(state.workers, worker_id, worker)}
+
+      :error ->
+        state
+    end
+  end
+
+  defp keep_output_tail(output, max) when byte_size(output) <= max, do: output
+
+  defp keep_output_tail(output, max) do
+    binary_part(output, byte_size(output) - max, max)
+  end
+
+  defp put_diagnostic_output(status, %{output: output}) when byte_size(output) > 0,
+    do: Map.put(status, :output, output)
+
+  defp put_diagnostic_output(status, _worker), do: status
 
   defp remove_worker_operations(worker, state) do
     case Map.get(worker, :operations_path) do

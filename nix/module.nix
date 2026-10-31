@@ -326,16 +326,6 @@ in {
         description = "Extra arguments appended to the run-worker-supervisor command.";
       };
 
-      packages = mkOption {
-        type = types.listOf types.package;
-        default = [];
-        description = ''
-          Packages added to the worker supervisor PATH. Workers and their
-          operation and lifecycle hook children inherit this PATH, so bare
-          executable names such as `git` resolve there.
-        '';
-      };
-
       environment = mkOption {
         type = types.attrsOf types.str;
         default = {};
@@ -617,15 +607,15 @@ in {
       requires = ["patchbay-token.service"];
       after = [
         "network.target"
+        "nix-daemon.service"
         "patchbay-token.service"
         "patchbay-manager.service"
       ];
 
       environment = supervisorEnvironment;
       path =
-        [cfg.package pkgs.coreutils pkgs.procps pkgs.bash]
-        ++ cfg.extraPackages
-        ++ cfg.workerSupervisor.packages;
+        [cfg.package pkgs.coreutils pkgs.procps pkgs.bash pkgs.nix]
+        ++ cfg.extraPackages;
 
       serviceConfig = {
         Type = "simple";
@@ -659,6 +649,7 @@ in {
             [
               cfg.agentStateDir
               cfg.agentRuntimeDir
+              "-/nix/var/nix/daemon-socket"
             ]
             ++ optional (cfg.workerSupervisor.workspaceRoot != null) cfg.workerSupervisor.workspaceRoot
             ++ optional (cfg.workerSupervisor.resultRoot != null) cfg.workerSupervisor.resultRoot
