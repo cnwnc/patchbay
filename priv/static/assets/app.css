@@ -1258,6 +1258,36 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.tool-terminal {
+  margin-top: 3px;
+  border-top: 1px dashed var(--line);
+  padding-top: 3px;
+}
+
+.tool-action {
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--blue);
+}
+
+.tool-result {
+  margin: 2px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-data);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+}
+
+.row-tool.is-terminal {
+  background: #eef4ff;
+  box-shadow: inset 2px 0 0 var(--blue);
+}
+
 .row-tool.is-ok .tool-state {
   color: var(--live);
 }
@@ -2061,3 +2091,73 @@ input:focus-visible {
   color: var(--fail-on-light);
 }
 
+
+/* ---------- toolkit manifests ---------- */
+
+.toolkit-row {
+  grid-template-columns: 24px minmax(0, 1.9fr) 76px 86px 38px 30px;
+}
+
+/* ---------- prompt editor ---------- */
+
+.prompt-create-form {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hair);
+  background: var(--panel-2);
+}
+
+.prompt-create-fields {
+  display: flex;
+  gap: 6px;
+}
+
+.prompt-create-fields input,
+.prompt-create-fields select {
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--white);
+  font-family: var(--mono);
+  font-size: var(--fs-data);
+  color: var(--ink);
+}
+
+.prompt-create-fields input {
+  flex: 1;
+}
+
+.prompt-create-fields .filter {
+  margin-left: 0;
+}
+
+.prompt-create-form textarea,
+.prompt-editor {
+  display: block;
+  width: 100%;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--white);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fs-data);
+  line-height: 1.55;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+}
+
+.prompt-editor {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.prompt-create-form textarea:focus-visible,
+.prompt-editor:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}

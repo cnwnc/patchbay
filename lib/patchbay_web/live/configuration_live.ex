@@ -5,6 +5,7 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   import PatchbayWeb.Presenter
 
+  alias Patchbay.Config.Prompt, as: ConfigPrompt
   alias Patchbay.Config.Source
   alias Patchbay.Config.Structured
   alias Patchbay.Definition.Error
@@ -38,7 +39,6 @@ defmodule PatchbayWeb.ConfigurationLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(@pubsub, "config")
-      :timer.send_interval(1_000, :tick)
     end
 
     {:ok,
@@ -71,11 +71,13 @@ defmodule PatchbayWeb.ConfigurationLive do
        config_dir: nil,
        resolved: "",
        prompts: [],
+       prompt_files: [],
+       prompt_drafts: %{},
+       prompt_conflicts: %{},
        scripts: [],
        new_agent_open: false,
        new_agent_id: "",
-       new_agent_lifecycle: "one-shot",
-       now: DateTime.utc_now()
+       new_agent_lifecycle: "one-shot"
      )}
   end
 
@@ -90,7 +92,9 @@ defmodule PatchbayWeb.ConfigurationLive do
           source_draft: nil,
           source_dirty?: false,
           structured: nil,
-          structured_dirty?: false
+          structured_dirty?: false,
+          prompt_drafts: %{},
+          prompt_conflicts: %{}
         )
         |> notify(:info, "Discarded unsaved changes to #{socket.assigns.selected}.")
       else
@@ -106,7 +110,7 @@ defmodule PatchbayWeb.ConfigurationLive do
       id == socket.assigns.selected ->
         {:noreply, assign(socket, pending_select: nil)}
 
-      socket.assigns.source_dirty? or socket.assigns.structured_dirty? ->
+      dirty?(socket) ->
         {:noreply, assign(socket, pending_select: id)}
 
       true ->
@@ -126,7 +130,9 @@ defmodule PatchbayWeb.ConfigurationLive do
             source_draft: nil,
             source_dirty?: false,
             structured: nil,
-            structured_dirty?: false
+            structured_dirty?: false,
+            prompt_drafts: %{},
+            prompt_conflicts: %{}
           )
 
         {:noreply, push_patch(socket, to: ~p"/config/#{id}")}
@@ -340,6 +346,61 @@ defmodule PatchbayWeb.ConfigurationLive do
     {:noreply, socket}
   end
 
+  def handle_event("edit_prompt", params, socket) do
+    source = string_param(params["prompt_source"])
+    name = string_param(params["prompt_name"])
+    content = params["prompt_content"]
+
+    case Enum.find(
+           socket.assigns.prompt_files,
+           &(Atom.to_string(&1.source) == source and &1.name == name)
+         ) do
+      nil ->
+        {:noreply, socket}
+
+      file when is_binary(content) ->
+        key = prompt_key(file.source, file.name)
+        existing = Map.get(socket.assigns.prompt_drafts, key)
+
+        draft = %{
+          source: source,
+          name: name,
+          content: content,
+          baseline: prompt_draft_baseline(existing, file),
+          hash: prompt_draft_hash(existing, Map.get(socket.assigns.prompt_conflicts, key), file)
+        }
+
+        drafts = Map.put(socket.assigns.prompt_drafts, key, draft)
+
+        {:noreply,
+         socket
+         |> assign(prompt_drafts: drafts)
+         |> assign(
+           prompts:
+             prompt_views(
+               socket.assigns.prompt_files,
+               drafts,
+               socket.assigns.prompt_conflicts
+             )
+         )}
+
+      _file ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("save_prompt", params, socket) do
+    {:noreply, save_prompt(socket, params)}
+  end
+
+  def handle_event("delete_prompt", params, socket) do
+    {:noreply, delete_prompt(socket, params)}
+  end
+
+  def handle_event("create_prompt", params, socket) do
+    {:noreply, create_prompt(socket, params)}
+  end
+
   def handle_event("save_structured", params, socket) do
     structured_params = params["structured"]
 
@@ -395,7 +456,7 @@ defmodule PatchbayWeb.ConfigurationLive do
           notify(socket, :error, "Reload failed: #{error_detail(reason)}")
       end
 
-    {:noreply, load(socket, socket.assigns.selected, reset_source: true)}
+    {:noreply, load(socket, socket.assigns.selected, reset_source: true, reset_prompts: true)}
   end
 
   @impl true
@@ -417,8 +478,6 @@ defmodule PatchbayWeb.ConfigurationLive do
 
     {:noreply, socket}
   end
-
-  def handle_info(:tick, socket), do: {:noreply, assign(socket, now: DateTime.utc_now())}
 
   defp load(socket, requested_id, opts \\ []) do
     definitions =
@@ -453,7 +512,17 @@ defmodule PatchbayWeb.ConfigurationLive do
           definition_data(definition)
       end
 
-    prompts = if definition, do: definition.prompts, else: []
+    prompt_drafts =
+      if selected == socket.assigns.selected and not Keyword.get(opts, :reset_prompts, false),
+        do: socket.assigns.prompt_drafts,
+        else: %{}
+
+    prompt_conflicts =
+      if selected == socket.assigns.selected and not Keyword.get(opts, :reset_prompts, false),
+        do: socket.assigns.prompt_conflicts,
+        else: %{}
+
+    prompt_files = prompt_files(config_dir, selected)
     scripts = if definition, do: definition.shared_scripts ++ definition.agent_scripts, else: []
 
     socket
@@ -465,12 +534,254 @@ defmodule PatchbayWeb.ConfigurationLive do
       failure: failure,
       config_dir: config_dir,
       resolved: resolved,
-      prompts: prompts,
-      scripts: scripts,
-      now: DateTime.utc_now()
+      prompt_files: prompt_files,
+      prompt_drafts: prompt_drafts,
+      prompt_conflicts: prompt_conflicts,
+      prompts: prompt_views(prompt_files, prompt_drafts, prompt_conflicts),
+      scripts: scripts
     )
     |> assign(source_assigns(source_info, socket, selected, snapshot, config_dir, opts))
   end
+
+  defp prompt_files(config_dir, selected) do
+    if is_binary(config_dir) and is_binary(selected) do
+      case safe(fn -> ConfigPrompt.list(config_dir, selected) end) do
+        files when is_list(files) -> files
+        _other -> []
+      end
+    else
+      []
+    end
+  end
+
+  defp prompt_views(files, drafts, conflicts) do
+    Enum.map(files, fn file ->
+      key = prompt_key(file.source, file.name)
+      hash = prompt_expected(file, Map.get(drafts, key), Map.get(conflicts, key))
+
+      case Map.get(drafts, key) do
+        %{content: content, baseline: baseline} ->
+          Map.merge(file, %{draft: content, dirty?: content != baseline, hash: hash})
+
+        _other ->
+          Map.merge(file, %{draft: file.content, dirty?: false, hash: hash})
+      end
+    end)
+  end
+
+  defp prompt_expected(_file, %{hash: hash}, _conflict) when is_binary(hash), do: hash
+  defp prompt_expected(_file, _draft, hash) when is_binary(hash), do: hash
+  defp prompt_expected(file, _draft, _conflict), do: file.hash
+
+  defp prompt_key(source, name), do: "#{source}/#{name}"
+
+  defp save_prompt(socket, params) do
+    id = socket.assigns.selected
+    source = string_param(params["prompt_source"])
+    name = string_param(params["prompt_name"])
+    content = params["prompt_content"]
+    file = find_prompt(socket, source, name)
+    draft = Map.get(socket.assigns.prompt_drafts, prompt_key(source, name))
+
+    cond do
+      is_nil(id) or is_nil(socket.assigns.config_dir) ->
+        notify(socket, :error, "Prompt save failed: no agent is selected.")
+
+      is_nil(file) ->
+        notify(socket, :error, "Prompt save failed: the prompt is no longer listed.")
+
+      is_nil(content) and is_nil(draft) ->
+        notify(socket, :error, "Prompt save failed: no content was submitted.")
+
+      true ->
+        content = if is_binary(content), do: content, else: draft.content
+        expected = prompt_expected_hash(params, file)
+
+        case safe(fn ->
+               ConfigPrompt.write(socket.assigns.config_dir, id, source, name, content, expected)
+             end) do
+          {:ok, _entry} ->
+            socket
+            |> assign(
+              prompt_drafts: Map.delete(socket.assigns.prompt_drafts, prompt_key(source, name)),
+              prompt_conflicts:
+                Map.delete(socket.assigns.prompt_conflicts, prompt_key(source, name))
+            )
+            |> reload_prompt_files()
+            |> after_prompt_change("Prompt #{name} saved.")
+
+          {:error, :stale} ->
+            socket
+            |> put_prompt_conflict(prompt_key(source, name), expected)
+            |> notify(
+              :error,
+              "Prompt save conflict: #{name} changed on disk after it was loaded. Reload to review the external change before saving; the current draft will not overwrite it."
+            )
+
+          {:error, reason} ->
+            notify(socket, :error, "Prompt save failed: #{prompt_error(reason)}")
+        end
+    end
+  end
+
+  defp delete_prompt(socket, params) do
+    id = socket.assigns.selected
+    source = string_param(params["prompt_source"])
+    name = string_param(params["prompt_name"])
+    file = find_prompt(socket, source, name)
+
+    cond do
+      is_nil(id) or is_nil(socket.assigns.config_dir) ->
+        notify(socket, :error, "Prompt delete failed: no agent is selected.")
+
+      is_nil(file) ->
+        notify(socket, :error, "Prompt delete failed: the prompt is no longer listed.")
+
+      true ->
+        expected = prompt_expected_hash(params, file)
+
+        case safe(fn ->
+               ConfigPrompt.delete(socket.assigns.config_dir, id, source, name, expected)
+             end) do
+          :ok ->
+            socket
+            |> assign(
+              prompt_drafts: Map.delete(socket.assigns.prompt_drafts, prompt_key(source, name)),
+              prompt_conflicts:
+                Map.delete(socket.assigns.prompt_conflicts, prompt_key(source, name))
+            )
+            |> reload_prompt_files()
+            |> after_prompt_change("Prompt #{name} deleted.")
+
+          {:error, :stale} ->
+            socket
+            |> put_prompt_conflict(prompt_key(source, name), expected)
+            |> notify(
+              :error,
+              "Prompt delete conflict: #{name} changed on disk after it was loaded. Reload to review the external change."
+            )
+
+          {:error, reason} ->
+            notify(socket, :error, "Prompt delete failed: #{prompt_error(reason)}")
+        end
+    end
+  end
+
+  defp create_prompt(socket, params) do
+    id = socket.assigns.selected
+    new_prompt = params["new_prompt"] || %{}
+    source = string_param(new_prompt["source"])
+    source = if source == "", do: "agent", else: source
+    name = string_param(new_prompt["filename"])
+    content = new_prompt["content"]
+    content = if is_binary(content) and String.trim(content) != "", do: content, else: nil
+
+    cond do
+      is_nil(id) or is_nil(socket.assigns.config_dir) ->
+        notify(socket, :error, "Prompt create failed: no agent is selected.")
+
+      not ConfigPrompt.valid_filename?(name) ->
+        notify(
+          socket,
+          :error,
+          "Prompt create failed: use a top-level .md or .markdown filename without slashes."
+        )
+
+      true ->
+        case safe(fn ->
+               ConfigPrompt.create(socket.assigns.config_dir, id, source, name, content)
+             end) do
+          {:ok, _entry} ->
+            socket
+            |> reload_prompt_files()
+            |> after_prompt_change("Prompt #{name} created.")
+
+          {:error, :exists} ->
+            notify(socket, :error, "Prompt create failed: #{name} already exists.")
+
+          {:error, :not_found} ->
+            notify(
+              socket,
+              :error,
+              "Prompt create failed: the agent directory does not exist."
+            )
+
+          {:error, reason} ->
+            notify(socket, :error, "Prompt create failed: #{prompt_error(reason)}")
+        end
+    end
+  end
+
+  defp find_prompt(socket, source, name) do
+    Enum.find(socket.assigns.prompt_files, fn file ->
+      Atom.to_string(file.source) == source and file.name == name
+    end)
+  end
+
+  defp prompt_expected_hash(params, file) do
+    case params["expected_hash"] do
+      hash when is_binary(hash) and hash != "" -> hash
+      _other -> file.hash
+    end
+  end
+
+  defp reload_prompt_files(socket) do
+    files = prompt_files(socket.assigns.config_dir, socket.assigns.selected)
+
+    assign(socket,
+      prompt_files: files,
+      prompts: prompt_views(files, socket.assigns.prompt_drafts, socket.assigns.prompt_conflicts)
+    )
+  end
+
+  defp put_prompt_conflict(socket, key, expected_hash) do
+    assign(socket, prompt_conflicts: Map.put(socket.assigns.prompt_conflicts, key, expected_hash))
+  end
+
+  defp prompt_draft_baseline(existing, file) do
+    if is_map(existing), do: Map.get(existing, :baseline, file.content), else: file.content
+  end
+
+  defp prompt_draft_hash(existing, conflict, file) do
+    cond do
+      is_map(existing) and is_binary(Map.get(existing, :hash)) -> existing.hash
+      is_binary(conflict) -> conflict
+      true -> file.hash
+    end
+  end
+
+  defp after_prompt_change(socket, message) do
+    detail =
+      case safe(fn -> DefinitionRegistry.reload_agent(socket.assigns.selected) end) do
+        {:ok, _snapshot} ->
+          nil
+
+        {:error, %Error{} = error} ->
+          " The agent definition is still invalid, so the last good definition remains active: #{Error.message(error)}"
+
+        {:error, :not_found} ->
+          " The agent directory was not found during reload."
+
+        {:error, reason} ->
+          " Definition reload failed: #{error_detail(reason)}"
+      end
+
+    broadcast_reload()
+    notify(socket, :info, message <> (detail || ""))
+  end
+
+  defp prompt_error(:invalid_filename),
+    do: "the filename must be a top-level .md or .markdown file"
+
+  defp prompt_error(:invalid_source), do: "the prompt source is not recognized"
+  defp prompt_error(:invalid_id), do: "the agent identifier is not valid"
+  defp prompt_error(:unsafe_path), do: "the path is not safe to edit"
+  defp prompt_error(:not_found), do: "the file no longer exists"
+
+  defp prompt_error({:io, reason}) when is_atom(reason),
+    do: :file.format_error(reason) |> to_string()
+
+  defp prompt_error(reason), do: error_detail(reason)
 
   defp source_assigns(source_info, socket, selected, snapshot, config_dir, opts) do
     fresh =
@@ -590,7 +901,15 @@ defmodule PatchbayWeb.ConfigurationLive do
     dirty?(socket) and is_binary(requested_id) and requested_id != socket.assigns.selected
   end
 
-  defp dirty?(socket), do: socket.assigns.source_dirty? or socket.assigns.structured_dirty?
+  defp dirty?(socket) do
+    socket.assigns.source_dirty? or socket.assigns.structured_dirty? or prompt_dirty?(socket)
+  end
+
+  defp prompt_dirty?(socket) do
+    socket.assigns.prompt_drafts
+    |> Map.values()
+    |> Enum.any?(fn draft -> draft.content != draft.baseline end)
+  end
 
   defp select_id(definitions, failures, nil) do
     first_id(definitions) || first_id(failures)
@@ -1277,9 +1596,13 @@ defmodule PatchbayWeb.ConfigurationLive do
           <nav class="global-nav" aria-label="Global navigation">
            <a class="nav-link" href={~p"/"}>CONSOLE</a>
            <a class="nav-link is-active" href={~p"/config"} aria-current="page">CONFIG</a>
+           <a class="nav-link" href={~p"/toolkits"}>TOOLKITS</a>
           </nav>
           <span class="local">DEFINITIONS <b>{length(@definitions)}</b></span>
-          <time class="clock">{Calendar.strftime(@now, "%H:%M:%S")} <small>UTC</small></time>
+          <time id="config-clock" class="clock" phx-hook="PatchbayClock">
+            <span data-clock-time>{Calendar.strftime(DateTime.utc_now(), "%H:%M:%S")}</span>
+            <small>UTC</small>
+          </time>
         </div>
       </header>
 
@@ -2224,20 +2547,89 @@ defmodule PatchbayWeb.ConfigurationLive do
               <pre class="code-block">{@resolved}</pre>
             </section>
 
-            <section :if={@snapshot} class="config-section">
+            <section :if={@selected && @config_dir} class="config-section">
               <header class="panel-head">
                 <h3>PROMPTS <span>{length(@prompts)}</span></h3>
+                <span class="panel-meta">SHARED THEN AGENT · FILENAME ORDER</span>
               </header>
+
+              <form class="prompt-create-form" phx-submit="create_prompt">
+                <div class="prompt-create-fields">
+                  <select name="new_prompt[source]" aria-label="Prompt source">
+                    <option value="agent" selected>AGENT</option>
+                    <option value="shared">SHARED</option>
+                  </select>
+                  <input
+                    name="new_prompt[filename]"
+                    type="text"
+                    placeholder="01-system.md"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button class="filter" type="submit">CREATE PROMPT</button>
+                </div>
+                <textarea
+                  name="new_prompt[content]"
+                  rows="3"
+                  placeholder="Optional initial Markdown content"
+                  spellcheck="false"
+                  phx-debounce="200"
+                ></textarea>
+              </form>
+
               <div :if={@prompts == []} class="empty-state inline">
                 <p>NO PROMPTS</p>
+                <p class="muted">Create a Markdown file above. Shared prompts run before agent prompts.</p>
               </div>
-              <article :for={prompt <- @prompts} class="prompt-card">
+
+              <article
+                :for={{prompt, index} <- Enum.with_index(@prompts)}
+                class="prompt-card"
+              >
                 <header>
                   <span class="prompt-name">{prompt.name}</span>
-                  <span class="prompt-source">{prompt.source}</span>
+                  <span class="prompt-source">{ConfigPrompt.label(prompt.source)}</span>
                   <span class="prompt-path">{prompt.path}</span>
                 </header>
-                <pre class="code-block">{prompt.content}</pre>
+
+                <p :if={prompt.error} class="source-note source-note-block">
+                  {prompt.error}
+                </p>
+
+                <form
+                  :if={!prompt.error}
+                  id={"prompt-form-#{index}"}
+                  class="prompt-form"
+                  phx-submit="save_prompt"
+                  phx-change="edit_prompt"
+                >
+                  <input type="hidden" name="prompt_source" value={prompt.source} />
+                  <input type="hidden" name="prompt_name" value={prompt.name} />
+                  <input type="hidden" name="expected_hash" value={prompt.hash} />
+                  <textarea
+                    id={"prompt-editor-#{index}"}
+                    class="prompt-editor"
+                    name="prompt_content"
+                    rows="8"
+                    spellcheck="false"
+                    aria-label={"prompt #{prompt.name}"}
+                    phx-debounce="200"
+                  >{prompt.draft}</textarea>
+                  <div class="source-actions">
+                    <span :if={prompt.dirty?} class="source-dirty">UNSAVED CHANGES</span>
+                    <button
+                      class="filter"
+                      type="button"
+                      phx-click="delete_prompt"
+                      phx-value-prompt_source={prompt.source}
+                      phx-value-prompt_name={prompt.name}
+                      phx-value-expected_hash={prompt.hash}
+                    >
+                      DELETE
+                    </button>
+                    <button class="filter" type="submit">SAVE PROMPT</button>
+                  </div>
+                </form>
               </article>
             </section>
 

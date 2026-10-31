@@ -28,6 +28,8 @@ defmodule Patchbay.Worker.Wire do
     :start_worker_result,
     :stop_worker,
     :stop_worker_result,
+    :teardown_workspace,
+    :teardown_workspace_result,
     :list_workers,
     :list_workers_result,
     :worker_exited,
@@ -73,7 +75,9 @@ defmodule Patchbay.Worker.Wire do
     :session_closed,
     :session_down,
     :worker_exited,
-    :port_down
+    :port_down,
+    :action,
+    :path
   ]
 
   @value_atoms [
@@ -97,6 +101,14 @@ defmodule Patchbay.Worker.Wire do
     :already_started,
     :worker_limit,
     :worker_spawn_failed,
+    :retain,
+    :export,
+    :destroy,
+    :workspace_not_found,
+    :workspace_destroy_failed,
+    :workspace_export_failed,
+    :workspace_teardown_failed,
+    :invalid_teardown_action,
     :non_loopback_manager,
     :invalid_manager_port,
     :invalid_worker_token,

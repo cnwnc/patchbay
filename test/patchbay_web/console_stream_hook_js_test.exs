@@ -40,7 +40,7 @@ defmodule PatchbayWeb.ConsoleStreamHookJsTest do
 
   function extractHookSource(layoutHtml) {
     const start = layoutHtml.indexOf('const PatchbayStream')
-    const stop = layoutHtml.indexOf('const PatchbayDetails')
+    const stop = layoutHtml.indexOf('const PatchbaySelection')
     assert(start > 0 && stop > start, 'layout contains the PatchbayStream hook')
 
     const literalStart = layoutHtml.indexOf('{', start)

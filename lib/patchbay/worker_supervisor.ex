@@ -139,6 +139,7 @@ defmodule Patchbay.WorkerSupervisor do
          max_workers: max_workers,
          workers: %{},
          port_to_worker: %{},
+         teardowns: %{},
          connections: MapSet.new(),
          connection_monitors: %{}
        }}
@@ -258,6 +259,12 @@ defmodule Patchbay.WorkerSupervisor do
          {:ok, packages} <- worker_packages(request),
          {:ok, paths} <- prepare_agent_paths(request, worker_id, state),
          {:ok, operations_path} <- prepare_operations(request, worker_id, paths, state) do
+      teardowns =
+        Map.put(state.teardowns, worker_id, %{
+          workspace: paths.workspace,
+          result_dir: paths.result_dir
+        })
+
       case start_worker_process(
              worker_id,
              token,
@@ -284,7 +291,13 @@ defmodule Patchbay.WorkerSupervisor do
                os_pid: worker.os_pid
              }}
 
-          {response, %{state | workers: workers, port_to_worker: port_to_worker}}
+          {response,
+           %{
+             state
+             | workers: workers,
+               port_to_worker: port_to_worker,
+               teardowns: teardowns
+           }}
 
         {:error, reason} ->
           remove_operations_file(operations_path, state)
@@ -292,7 +305,7 @@ defmodule Patchbay.WorkerSupervisor do
           response =
             {:start_worker_result, %{request_id: request_id, status: :error, error: reason}}
 
-          {response, state}
+          {response, %{state | teardowns: teardowns}}
       end
     else
       {:error, reason} ->
@@ -324,6 +337,52 @@ defmodule Patchbay.WorkerSupervisor do
     else
       {:error, reason} ->
         {{:stop_worker_result,
+          %{request_id: fallback_request_id(request), status: :error, error: reason}}, state}
+    end
+  end
+
+  # Workspace teardown is scoped by worker id, never by a manager-supplied
+  # path. The supervisor remembers the workspace and result directory it
+  # allocated at start time and acts only on those. Both must still resolve
+  # strictly below a configured root; with no root there is no safe boundary,
+  # so destroy and export are refused. A workspace that has become a symlink
+  # is refused rather than followed.
+  defp handle_request({:teardown_workspace, %{} = request}, state) do
+    with {:ok, request_id} <- request_id(request),
+         {:ok, worker_id} <- worker_id(request),
+         {:ok, action} <- teardown_action(request),
+         {:ok, entry} <- Map.fetch(state.teardowns, worker_id) do
+      case perform_teardown(action, entry, state) do
+        {:ok, path} ->
+          response =
+            {:teardown_workspace_result,
+             %{
+               request_id: request_id,
+               worker_id: worker_id,
+               status: :ok,
+               action: action,
+               path: path
+             }}
+
+          {response, %{state | teardowns: Map.delete(state.teardowns, worker_id)}}
+
+        {:error, reason} ->
+          response =
+            {:teardown_workspace_result, %{request_id: request_id, status: :error, error: reason}}
+
+          {response, state}
+      end
+    else
+      :error ->
+        {{:teardown_workspace_result,
+          %{
+            request_id: fallback_request_id(request),
+            status: :error,
+            error: :workspace_not_found
+          }}, state}
+
+      {:error, reason} ->
+        {{:teardown_workspace_result,
           %{request_id: fallback_request_id(request), status: :error, error: reason}}, state}
     end
   end
@@ -481,6 +540,138 @@ defmodule Patchbay.WorkerSupervisor do
   defp path_error(:workspace), do: :invalid_workspace
   defp path_error(:result_dir), do: :invalid_result_dir
   defp path_error(:state_dir), do: :invalid_state_dir
+
+  defp teardown_action(%{action: action}) when action in [:retain, :export, :destroy],
+    do: {:ok, action}
+
+  defp teardown_action(%{action: action})
+       when action in ["retain", "export", "destroy"],
+       do: {:ok, String.to_existing_atom(action)}
+
+  defp teardown_action(_request), do: {:error, :invalid_teardown_action}
+
+  defp perform_teardown(:retain, _entry, _state), do: {:ok, nil}
+
+  defp perform_teardown(:destroy, entry, state) do
+    with {:ok, workspace} <- teardown_workspace_path(entry, state) do
+      case File.rm_rf(workspace) do
+        {:ok, _removed} -> {:ok, workspace}
+        {:error, _reason, _file} -> {:error, :workspace_destroy_failed}
+      end
+    end
+  end
+
+  defp perform_teardown(:export, entry, state) do
+    with {:ok, workspace} <- teardown_workspace_path(entry, state),
+         {:ok, result_dir} <- teardown_result_path(entry, state),
+         :ok <- export_source(workspace),
+         destination = Path.join(result_dir, "workspace"),
+         :ok <- clear_export(destination, result_dir),
+         :ok <- move_workspace(workspace, destination) do
+      {:ok, destination}
+    else
+      {:error, _reason, _file} -> {:error, :workspace_export_failed}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp perform_teardown(_action, _entry, _state), do: {:error, :invalid_teardown_action}
+
+  defp teardown_workspace_path(%{workspace: path}, state) when is_binary(path) do
+    expanded = Path.expand(path)
+
+    cond do
+      String.contains?(path, <<0>>) -> {:error, :invalid_workspace}
+      protected_root?(expanded, state) -> {:error, :invalid_workspace}
+      not under_configured_root?(expanded, state.workspace_root) -> {:error, :invalid_workspace}
+      not directory_or_missing?(expanded) -> {:error, :invalid_workspace}
+      true -> {:ok, expanded}
+    end
+  end
+
+  defp teardown_workspace_path(_entry, _state), do: {:error, :workspace_not_found}
+
+  defp teardown_result_path(%{result_dir: path}, state) when is_binary(path) do
+    expanded = Path.expand(path)
+
+    cond do
+      String.contains?(path, <<0>>) -> {:error, :invalid_result_dir}
+      protected_root?(expanded, state) -> {:error, :invalid_result_dir}
+      not under_configured_root?(expanded, state.result_root) -> {:error, :invalid_result_dir}
+      not directory?(expanded) -> {:error, :invalid_result_dir}
+      true -> {:ok, expanded}
+    end
+  end
+
+  defp teardown_result_path(_entry, _state), do: {:error, :result_dir_unavailable}
+
+  defp export_source(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :directory}} -> :ok
+      {:ok, _other} -> {:error, :invalid_workspace}
+      {:error, _reason} -> {:error, :workspace_not_found}
+    end
+  end
+
+  defp clear_export(destination, result_dir) do
+    if absolute_under?(destination, result_dir) do
+      case File.rm_rf(destination) do
+        {:ok, _removed} -> :ok
+        {:error, _reason, _file} -> {:error, :workspace_export_failed}
+      end
+    else
+      {:error, :invalid_result_dir}
+    end
+  end
+
+  # Rename is a move when the workspace and result area share a filesystem.
+  # A result root on another filesystem falls back to a full copy followed by
+  # removal, but only after the copy succeeds.
+  defp move_workspace(source, destination) do
+    case File.rename(source, destination) do
+      :ok ->
+        :ok
+
+      {:error, :exdev} ->
+        case File.cp_r(source, destination) do
+          {:ok, _files} ->
+            case File.rm_rf(source) do
+              {:ok, _removed} -> :ok
+              {:error, _reason, _file} -> {:error, :workspace_export_failed}
+            end
+
+          _other ->
+            {:error, :workspace_export_failed}
+        end
+
+      {:error, _reason} ->
+        {:error, :workspace_export_failed}
+    end
+  end
+
+  defp protected_root?(path, state) do
+    roots =
+      [state.workspace_root, state.workspace, state.result_root, state.state_root]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&Path.expand/1)
+
+    path == "/" or path in roots
+  end
+
+  defp under_configured_root?(_path, nil), do: false
+  defp under_configured_root?(path, root), do: absolute_under?(path, root)
+
+  defp directory?(path) do
+    match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
+  end
+
+  defp directory_or_missing?(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} -> true
+      {:error, :enoent} -> true
+      _other -> false
+    end
+  end
 
   defp prepare_operations(request, worker_id, paths, state) do
     case Map.fetch(request, :operations) do

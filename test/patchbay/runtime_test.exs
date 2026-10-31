@@ -90,6 +90,11 @@ defmodule Patchbay.RuntimeTest.Manager do
     {:reply, state.stop_result, record(state, {:stop_worker, worker_id, timeout})}
   end
 
+  def handle_call({:teardown_workspace, worker_id, action, opts}, _from, state) do
+    reply = {:ok, %{worker_id: worker_id, action: action, path: Keyword.get(opts, :path)}}
+    {:reply, reply, record(state, {:teardown_workspace, worker_id, action, opts})}
+  end
+
   def handle_call({:transcript_path, worker_id}, _from, state) do
     path = Path.join(state.transcript_dir, worker_id <> ".pbt")
     {:reply, path, record(state, {:transcript_path, worker_id})}
@@ -122,6 +127,10 @@ defmodule Patchbay.RuntimeTest.WorkerClient do
   @impl true
   def stop_worker(server, worker_id, timeout),
     do: GenServer.call(server, {:stop_worker, worker_id, timeout})
+
+  @impl true
+  def teardown_workspace(server, worker_id, action, opts),
+    do: GenServer.call(server, {:teardown_workspace, worker_id, action, opts})
 
   @impl true
   def transcript_path(server, worker_id),

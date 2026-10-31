@@ -159,6 +159,11 @@ defmodule Patchbay.AgentRunnerTest.Manager do
     {:reply, state.stop_result, record(state, {:stop_worker, worker_id, timeout})}
   end
 
+  def handle_call({:teardown_workspace, worker_id, action, opts}, _from, state) do
+    reply = {:ok, %{worker_id: worker_id, action: action, path: nil}}
+    {:reply, reply, record(state, {:teardown_workspace, worker_id, action, opts})}
+  end
+
   def handle_call({:transcript_path, worker_id}, _from, state) do
     {:reply, Path.join(System.tmp_dir!(), worker_id <> ".pbt"),
      record(state, {:transcript_path, worker_id})}
@@ -185,6 +190,10 @@ defmodule Patchbay.AgentRunnerTest.WorkerClient do
   @impl true
   def stop_worker(server, worker_id, timeout),
     do: GenServer.call(server, {:stop_worker, worker_id, timeout})
+
+  @impl true
+  def teardown_workspace(server, worker_id, action, opts),
+    do: GenServer.call(server, {:teardown_workspace, worker_id, action, opts})
 
   @impl true
   def transcript_path(server, worker_id),
@@ -264,9 +273,13 @@ defmodule Patchbay.AgentRunnerTest do
              &match?({:execute, "agent.alpha", "echo", %{"text" => "hi"}, _}, &1)
            )
 
-    assert {:ok, [record]} = Runtime.tool_history(runtime, "alpha")
+    assert {:ok, [record, terminal]} = Runtime.tool_history(runtime, "alpha")
     assert record.tool_name == "echo"
     assert record.truncated_result == "echo:hi"
+    assert terminal.tool_name == "complete_task"
+    assert terminal.toolkit_id == "builtin"
+    assert terminal.status == "ok"
+    assert terminal.truncated_result =~ "\"summary\":\"ok\""
 
     assert {:ok, messages} = Runtime.messages(runtime, "alpha")
     assert Enum.any?(messages, &(&1.role == :system and &1.content =~ "test agent"))
@@ -448,7 +461,11 @@ defmodule Patchbay.AgentRunnerTest do
              &match?({:execute, _worker_id, _operation, _arguments, _timeout}, &1)
            )
 
-    assert {:ok, []} = Runtime.tool_history(runtime, "alpha")
+    assert {:ok, [rejected, completed]} = Runtime.tool_history(runtime, "alpha")
+    assert rejected.tool_name == "complete_task"
+    assert rejected.status == "error"
+    assert rejected.truncated_result =~ "terminal tools must be called alone"
+    assert completed.status == "ok"
 
     assert {:ok, entries} = ContextStore.read(state_dir, "alpha")
     messages = for {:message, %{message: message}} <- entries, do: message

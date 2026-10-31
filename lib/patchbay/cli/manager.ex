@@ -105,6 +105,21 @@ defmodule Patchbay.CLI.Manager do
     GenServer.call(server, {:stop_worker, worker_id}, timeout + 1_000)
   end
 
+  @doc """
+  Asks the supervisor to apply a workspace teardown action for one worker.
+
+  The supervisor runs as the agent user and owns the workspace and result
+  directories, so it can remove or export them after the worker exits. Only
+  the worker id travels in the request; the paths are the ones the supervisor
+  allocated for that worker.
+  """
+  @spec teardown_workspace(GenServer.server(), binary(), atom(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def teardown_workspace(server, worker_id, action, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 10_000)
+    GenServer.call(server, {:teardown_workspace, worker_id, action, opts}, timeout + 1_000)
+  end
+
   @doc "Lists workers tracked by the manager."
   @spec list_workers(GenServer.server()) :: [map()]
   def list_workers(server), do: GenServer.call(server, :list_workers)
@@ -371,6 +386,28 @@ defmodule Patchbay.CLI.Manager do
     end
   end
 
+  def handle_call({:teardown_workspace, worker_id, action, _opts}, from, state) do
+    with {:ok, worker_id} <- validate_worker_id(worker_id),
+         {:ok, action} <- validate_teardown_action(action),
+         :ok <- ensure_control_connected(state) do
+      request_id = Token.generate()
+      request = %{from: from, type: :teardown_workspace, worker_id: worker_id}
+
+      message =
+        {:teardown_workspace, %{request_id: request_id, worker_id: worker_id, action: action}}
+
+      case Control.send_message(state.control_socket, message) do
+        :ok ->
+          {:noreply, %{state | requests: Map.put(state.requests, request_id, request)}}
+
+        {:error, reason} ->
+          {:reply, {:error, {:control_send_failed, reason}}, state}
+      end
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_cast({:worker_ready, worker_id, session}, state) do
     case Map.fetch(state.workers, worker_id) do
@@ -529,6 +566,37 @@ defmodule Patchbay.CLI.Manager do
     end
   end
 
+  def handle_info(
+        {:control_message, {:teardown_workspace_result, %{request_id: request_id} = result}},
+        state
+      ) do
+    case Map.pop(state.requests, request_id) do
+      {nil, _requests} ->
+        {:noreply, state}
+
+      {request, requests} ->
+        reply =
+          case result do
+            %{status: :ok, action: action} ->
+              {:ok,
+               %{
+                 worker_id: request.worker_id,
+                 action: action,
+                 path: Map.get(result, :path)
+               }}
+
+            %{status: :error, error: reason} ->
+              {:error, reason}
+
+            _other ->
+              {:error, :invalid_supervisor_response}
+          end
+
+        GenServer.reply(request.from, reply)
+        {:noreply, %{state | requests: requests}}
+    end
+  end
+
   def handle_info({:control_message, {:worker_exited, %{worker_id: worker_id} = event}}, state) do
     state = mark_worker_down(state, worker_id, %{worker_exited: Map.get(event, :status)})
     {:noreply, state}
@@ -624,6 +692,11 @@ defmodule Patchbay.CLI.Manager do
   end
 
   defp validate_worker_id(_worker_id), do: {:error, :invalid_worker_id}
+
+  defp validate_teardown_action(action) when action in [:retain, :export, :destroy],
+    do: {:ok, action}
+
+  defp validate_teardown_action(_action), do: {:error, :invalid_teardown_action}
 
   defp ensure_worker_accepts_session(%{status: status})
        when status in [:starting, :connected, :ready],

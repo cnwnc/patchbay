@@ -598,8 +598,13 @@ defmodule PatchbayWeb.ConsoleLive do
   defp row_class(%{kind: :event}), do: "stream-row row-event"
   defp row_class(%{kind: :chat, role: :operator}), do: "stream-row row-chat is-operator"
   defp row_class(%{kind: :chat}), do: "stream-row row-chat is-agent"
+
+  defp row_class(%{kind: :tool, terminal: true} = item),
+    do: "stream-row row-tool is-terminal #{item.tone}"
+
   defp row_class(%{kind: :tool} = item), do: "stream-row row-tool #{item.tone}"
 
+  defp row_type(%{kind: :tool, terminal: true}), do: "TASK"
   defp row_type(%{kind: :tool}), do: "TOOL"
   defp row_type(%{kind: :chat} = item), do: item.type
   defp row_type(_item), do: "EVENT"
@@ -644,6 +649,7 @@ defmodule PatchbayWeb.ConsoleLive do
           <nav class="global-nav" aria-label="Global navigation">
             <a class="nav-link is-active" href={~p"/"} aria-current="page">CONSOLE</a>
             <a class="nav-link" href={~p"/config"}>CONFIG</a>
+            <a class="nav-link" href={~p"/toolkits"}>TOOLKITS</a>
           </nav>
           <span class="local">
             <span class={"lamp #{if @control == :connected, do: "live", else: "idle"}"}></span>
@@ -881,6 +887,10 @@ defmodule PatchbayWeb.ConsoleLive do
                     <span class="tool-src">{item.src}</span>
                     <span class="tool-state">{item.status}</span>
                     <span class="tool-dur"></span>
+                  </div>
+                  <div :if={item.kind == :tool and item.terminal} class="tool-terminal">
+                    <span class="tool-action">{item.action}</span>
+                    <pre class="tool-result">{item.result}</pre>
                   </div>
                 </div>
               </li>

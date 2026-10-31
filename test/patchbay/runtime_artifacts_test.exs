@@ -39,6 +39,11 @@ defmodule Patchbay.RuntimeArtifactsTest.Manager do
   def handle_call({:stop_worker, worker_id, _timeout}, _from, state),
     do: {:reply, {:ok, %{status: :stopping}}, record(state, {:stop_worker, worker_id})}
 
+  def handle_call({:teardown_workspace, worker_id, action, _opts}, _from, state),
+    do:
+      {:reply, {:ok, %{worker_id: worker_id, action: action, path: nil}},
+       record(state, {:teardown_workspace, worker_id, action})}
+
   def handle_call({:transcript_path, worker_id}, _from, state),
     do:
       {:reply, Path.join(System.tmp_dir!(), worker_id <> ".pbt"),
@@ -65,6 +70,10 @@ defmodule Patchbay.RuntimeArtifactsTest.WorkerClient do
   @impl true
   def stop_worker(server, worker_id, timeout),
     do: GenServer.call(server, {:stop_worker, worker_id, timeout})
+
+  @impl true
+  def teardown_workspace(server, worker_id, action, opts),
+    do: GenServer.call(server, {:teardown_workspace, worker_id, action, opts})
 
   @impl true
   def transcript_path(server, worker_id),

@@ -70,6 +70,17 @@ defmodule Patchbay.Toolkit.Manifest do
   @spec builtin_names() :: [String.t()]
   def builtin_names, do: @builtin_sources |> Map.keys() |> Enum.sort()
 
+  @doc "Path and source text of an embedded manifest."
+  @spec builtin_source(String.t()) :: {:ok, Path.t(), String.t()} | :error
+  def builtin_source(name) when is_binary(name) do
+    case Map.fetch(@builtin_sources, name) do
+      {:ok, {path, source}} -> {:ok, path, source}
+      :error -> :error
+    end
+  end
+
+  def builtin_source(_name), do: :error
+
   @doc "Default manifest search directories, highest priority first."
   @spec dirs(keyword()) :: [Path.t()]
   def dirs(opts \\ []) do

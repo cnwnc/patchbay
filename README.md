@@ -34,7 +34,7 @@ Operations and lifecycle hooks may use bare executable names such as `git`. They
 
 The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`).
 
-The Console, Configuration, and artifact download routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
+The Console, Configuration, Toolkit, and artifact download routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
 
 ```sh
 sudo cat /run/patchbay/ui-token.env
@@ -67,6 +67,8 @@ The workspace, result, state, runtime, transcript, and per-agent roots are separ
 
 The `/config` route has SOURCE and STRUCTURED tabs for the selected definition. Both save through the revision-checked `Patchbay.Config.Source.write/4`; a file changed after it was loaded produces a save conflict instead of an overwrite.
 
+The PROMPTS section lists `<config_root>/shared/prompts` before `<agent_dir>/prompts`, each group ordered by filename. Prompt text is editable and saves through the revision-checked `Patchbay.Config.Prompt` module. New `.md` and `.markdown` files can be created at the top level of either directory; nested paths, parent references, and symlinked prompt files are rejected. Deletes also require the loaded revision. Unsaved prompt drafts survive ticks and reload broadcasts. The list is read from the prompt directories directly, so an invalid `agent.toml` does not block prompt editing; the last good definition stays active while it remains invalid.
+
 The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, and reasoning; lifecycle kind, schedule, overlap, and catch-up; `[[lifecycle.init]]` and `[[lifecycle.finalize]]` hooks; environment packages; workspace allocation; context recovery and compaction thresholds; teardown workspace; budgets; toolkits and results. Invalid or blank definitions use the source editor only.
 
 Toolkits are added by picking from the manifests the manager can resolve (the built-in `filesystem`, `personal-memory`, `secret-env`, and `terminal` manifests, plus every `toolkits/*.toml` under the config directory) or by choosing CUSTOM TOOLKIT and typing any manifest name. Each row shows the tools the resolved manifest exposes, so a declared native toolkit's tool surface is visible. The native config the schema defines is editable per native: the `filesystem` root (which must pass the native toolkit check, and which accepts `{%variable}` tokens such as `{%workspace}`, as its field label notes), the `personal-memory` namespace, and `secret-env` lines of the form `NAME=secret://<name>`. Secret references are declarations, not secret bytes: the structured editor shows and rewrites the lines, even though the source tab hides sources that carry `secret://` references.
@@ -80,9 +82,16 @@ Kept intentionally source-only:
 - Top-level `[[operations]]`: it is accepted by `Definition.parse/2`, but definitions loaded from the config tree drop inline operations whose names are new to the resolved manifest, so fixed operations belong in a manifest. The editor edits `[[toolkits.operations]]` only.
 - The `[context]` compaction aliases (`compact-threshold`, `compact-at`, `compact-target`, `compact-to`): editing a compaction field writes `threshold` or `target`, leaving the aliases in place for other tooling.
 - `format-version`, and the lifecycle `one_shot` spelling, which is normalized to `one-shot` on edit.
-- Manifest files themselves (`<config_dir>/toolkits/*.toml`), scripts, and the agent directory layout.
-- Prompt and script files: the tab inventories their names, sources, and paths, and prompt texts are shown read-only. Edit prompt files on disk.
+- Scripts and the agent directory layout.
 - Provider selection: the `[model] provider` value is stored on the definition, while the manager's configured provider module decides the transport.
+
+### Toolkit manifest editor
+
+The `/toolkits` route lists every `toolkits/*.toml` under the configuration root plus the embedded manifests, which are read-only. A configuration manifest with the same name overrides its embedded counterpart and is listed once as editable.
+
+Each manifest has SOURCE and STRUCTURED tabs. The SOURCE tab edits raw TOML; the STRUCTURED tab edits description, implicit flag, native toolkit selection, selected native tools, common native config (`filesystem` root, `personal-memory` namespace, `secret-env` lines), and fixed operations with name, executable, description, and one argument per line. Keys and comments the form does not cover survive a save.
+
+New manifests use a lowercase identifier and create `<config_root>/toolkits/<id>.toml` only while the file does not exist. Both tabs save through `Patchbay.Config.File` for revision-checked atomic replacement and validate the result with `Patchbay.Toolkit.Manifest` before writing. A stale revision reports a conflict, and invalid text or an unknown native toolkit is refused without changing the file. Creating a manifest only writes files below the configuration tree; it never changes ownership or permissions.
 
 ## Agent reference
 
@@ -100,7 +109,7 @@ Unknown top-level keys and unknown keys in most tables are ignored. Validation e
 | `toolkits` | array of tables | no | Toolkit instances and manifest references. |
 | `operations` | array of tables | no | Shorthand for one implicit `fixed` toolkit. |
 | `context` | table | no | Context recovery and compaction policy. |
-| `teardown` | table | no | Declared workspace disposition. Currently validated and retained only. |
+| `teardown` | table | no | Workspace disposition after each run. |
 | `budgets` | table | no | Declared per-run limits. Currently not enforced. |
 | `results` | array of tables | no | Values the agent submits through `complete_task`. |
 
@@ -210,7 +219,9 @@ The absent table or key keeps the workspace enabled for compatibility with exist
 | --- | --- | --- | --- | --- |
 | `workspace` | enum | no | `retain` | `retain`, `export`, `destroy` |
 
-The value is parsed, validated, and retained on the definition. Omission behaves as `retain`, and the structured editor shows RETAIN as the concrete default. No workspace teardown action currently consumes it.
+The value runs when a run reaches a terminal state: `complete_task`, `fail_task`, an operator stop, or a failed start. Teardown happens after the run's file results have been copied and after finalize hooks have run, and it is executed by the worker supervisor, which runs as the agent user and owns the per-agent workspace and result directories. The manager names only the worker and the action; it never sends a path.
+
+`retain` leaves the workspace in place. `destroy` removes the agent's current workspace directory. `export` moves the workspace to `<result_dir>/<agent-id>/workspace` (copying first when the result area is on another filesystem) and records the destination path in a `workspace_exported` event. Both actions are confined to the workspace and result directories the supervisor allocated for that worker. A workspace that has been replaced with a symlink is refused. Omission behaves as `retain`, and the structured editor shows RETAIN as the concrete default.
 
 ### `[budgets]`
 
@@ -275,7 +286,7 @@ catch-up = "once"
 [[lifecycle.init]]
 name = "prepare"
 executable = "/bin/sh"
-argv = ["-c", 'mkdir -p "$1"', "sh", "{%workspace}"]
+argv = ["-c", 'test -d "$1" && printf "%s\n" "$2" > "$1/started" ', "sh", "{%workspace}", "{%run_id}"]
 
 [[lifecycle.finalize]]
 name = "record"
@@ -449,6 +460,8 @@ Operations execute without a shell. Fixed operations and their arguments run in 
 
 The built-in `terminal` manifest is implicit and supplies `complete_task` and `fail_task` to every agent. Its schemas are generated from the agent's `[[results]]`. Calls are intercepted by the agent runner and never reach `Terminal.execute/3`. Do not remove the implicit terminal manifest; an agent may also declare `toolkit = "terminal"` explicitly without adding duplicate tools.
 
+Terminal calls are recorded in the durable tool history like other tools, with toolkit id `builtin`. The Console renders them as distinct TASK rows that show the submitted arguments and the full completed or failed result, and the matching `tool_result` event is not repeated as a separate row.
+
 ### Filesystem
 
 Declare the built-in filesystem toolkit to expose `read_file`, `list_directory`, `write_file`, and `edit_file`:
@@ -601,7 +614,6 @@ Accepted declarations with no runtime effect beyond validation, storage, or mana
 | --- | --- |
 | `[model] provider` | Validated and retained. Provider selection uses the manager's configured provider module. |
 | `[model] reasoning` | Validated and retained. Not forwarded to the provider. |
-| `[teardown] workspace` | Validated and retained. No retain, export, or destroy action runs after a result. |
 | `[budgets] run-seconds` | Validated and retained. Not enforced. |
 | `[budgets] tokens` | Validated, retained, and displayed in the UI. Not enforced. |
 | `[context]` strings outside the keep/reset vocabularies | Treated as unset instead of producing an error. |

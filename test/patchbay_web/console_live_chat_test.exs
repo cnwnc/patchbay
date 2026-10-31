@@ -13,6 +13,7 @@ defmodule PatchbayWeb.ConsoleLiveChatTest.FakeRuntime do
      %{
        summary: Keyword.fetch!(opts, :summary),
        events: Keyword.get(opts, :events, []),
+       history: Keyword.get(opts, :history, []),
        messages: [],
        calls: []
      }}
@@ -97,7 +98,7 @@ defmodule PatchbayWeb.ConsoleLiveChatTest.FakeRuntime do
   end
 
   def handle_call({:tool_history, agent_id}, _from, state) do
-    {:reply, {:ok, []}, record(state, {:tool_history, agent_id})}
+    {:reply, {:ok, state.history}, record(state, {:tool_history, agent_id})}
   end
 
   defp record(state, call), do: %{state | calls: [call | state.calls]}
@@ -281,6 +282,68 @@ defmodule PatchbayWeb.ConsoleLiveChatTest do
     refute html =~ "stream-row row-event"
   end
 
+  test "renders terminal model calls as distinct task rows with the full result", %{conn: conn} do
+    result = ~s({"status":"completed","value":{"summary":"all checks passed"}})
+
+    _runtime =
+      start_fake(summary("researcher", activity: :waiting),
+        history: [
+          %Patchbay.ToolHistory{
+            sequence: "1",
+            timestamp: "2026-01-01T00:05:01Z",
+            call_id: "evt-read-call",
+            toolkit_id: "filesystem",
+            tool_name: "read",
+            arguments: ~s(%{"path" => "notes.txt"}),
+            status: "ok",
+            truncated_result: "file bytes",
+            transcript_event_id: "evt-read-call"
+          },
+          %Patchbay.ToolHistory{
+            sequence: "2",
+            timestamp: "2026-01-01T00:05:02Z",
+            call_id: "call-2",
+            toolkit_id: "builtin",
+            tool_name: "complete_task",
+            arguments: ~s(%{"results" => %{"summary" => "all checks passed"}}),
+            status: "ok",
+            truncated_result: result,
+            transcript_event_id: "call-2"
+          }
+        ],
+        events: [
+          event(:model_message, %{
+            "content" => "working on it",
+            "finish_reason" => "tool_calls"
+          }),
+          event(:model_tool_call, %{
+            "tool_call_id" => "call-2",
+            "tool_name" => "complete_task",
+            "arguments" => ~s(%{"results" => %{"summary" => "all checks passed"}})
+          }),
+          event(:model_tool_call, %{
+            "tool_call_id" => "call-1",
+            "tool_name" => "read",
+            "arguments" => ~s(%{"path" => "notes.txt"})
+          })
+        ]
+      )
+
+    {:ok, _view, html} = live(conn, "/")
+
+    assert html =~ "row-tool is-terminal"
+    assert html =~ "TASK"
+    assert html =~ "complete_task"
+    assert html =~ "tool-terminal"
+    assert html =~ "row-chat is-agent"
+    assert html =~ "working on it"
+    assert count(html, "row-tool is-terminal") == 1
+    assert count(html, "MODEL TOOL CALL") == 1
+    assert count(html, "&quot;results&quot;") == 0
+    assert count(html, "&quot;value&quot;") == 1
+    assert count(html, "tool-action") == 1
+  end
+
   test "renders full provider errors inside event details", %{conn: conn} do
     message = "upstream rejected the request: " <> String.duplicate("detail ", 60)
 
@@ -418,4 +481,6 @@ defmodule PatchbayWeb.ConsoleLiveChatTest do
       end
     end)
   end
+
+  defp count(html, needle), do: length(String.split(html, needle)) - 1
 end

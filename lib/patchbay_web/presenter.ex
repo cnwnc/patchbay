@@ -235,6 +235,9 @@ defmodule PatchbayWeb.Presenter do
   def event_label(:hook_started), do: "HOOK STARTED"
   def event_label(:hook_finished), do: "HOOK FINISHED"
   def event_label(:hook_failed), do: "HOOK FAILED"
+  def event_label(:workspace_exported), do: "WORKSPACE EXPORTED"
+  def event_label(:workspace_destroyed), do: "WORKSPACE DESTROYED"
+  def event_label(:workspace_teardown_failed), do: "WORKSPACE TEARDOWN FAILED"
   def event_label(type), do: type |> Atom.to_string() |> String.upcase()
 
   def activity_label(:idle), do: "IDLE"
@@ -362,6 +365,27 @@ defmodule PatchbayWeb.Presenter do
     ])
   end
 
+  defp event_detail(:workspace_exported, data) do
+    join([
+      "ACTION " <> full_text(data, "action", "export"),
+      "PATH " <> full_text(data, "path", "—")
+    ])
+  end
+
+  defp event_detail(:workspace_destroyed, data) do
+    join([
+      "ACTION " <> full_text(data, "action", "destroy"),
+      "PATH " <> full_text(data, "path", "—")
+    ])
+  end
+
+  defp event_detail(:workspace_teardown_failed, data) do
+    join([
+      "ACTION " <> full_text(data, "action", "—"),
+      full_text(data, "reason", "")
+    ])
+  end
+
   defp event_detail(_type, data), do: data_detail(data)
 
   def event_preview(event) do
@@ -376,27 +400,52 @@ defmodule PatchbayWeb.Presenter do
   def stream_items(events, history) do
     history_ids = MapSet.new(history, & &1.call_id)
 
+    terminal_ids =
+      history
+      |> Enum.filter(&terminal_tool_name?(&1.tool_name))
+      |> MapSet.new(& &1.call_id)
+
     event_items =
       events
       |> Enum.reject(fn event ->
-        event.type in [:tool_call, :tool_result] and
-          MapSet.member?(history_ids, tool_event_id(event))
+        case event.type do
+          :model_tool_call ->
+            MapSet.member?(terminal_ids, tool_event_id(event))
+
+          :tool_call ->
+            MapSet.member?(history_ids, tool_event_id(event))
+
+          :tool_result ->
+            MapSet.member?(history_ids, tool_event_id(event))
+
+          _other ->
+            false
+        end
       end)
       |> Enum.map(&event_item/1)
 
     tool_items =
       Enum.map(history, fn record ->
+        terminal? = terminal_tool_name?(record.tool_name)
+
         %{
           kind: :tool,
           id: "tool-#{record.call_id}",
           at: at_ms(record.timestamp),
           time: event_time(record),
           name: record.tool_name,
-          target: truncate(record.arguments, @tool_detail_limit),
+          target:
+            if(terminal?,
+              do: "",
+              else: truncate(record.arguments, @tool_detail_limit)
+            ),
           toolkit: record.toolkit_id,
-          src: String.first(record.toolkit_id || ""),
+          src: if(terminal?, do: "BUILTIN", else: String.first(record.toolkit_id || "")),
           status: String.upcase(record.status),
-          tone: tool_tone(record.status)
+          tone: tool_tone(record.status),
+          terminal: terminal?,
+          result: if(terminal?, do: record.truncated_result, else: ""),
+          action: if(terminal?, do: terminal_action(record.tool_name), else: nil)
         }
       end)
 
@@ -646,7 +695,15 @@ defmodule PatchbayWeb.Presenter do
   def error_detail(term) when is_binary(term), do: term
   def error_detail(term), do: inspect(term, limit: 8, printable_limit: 400)
 
+  defp terminal_tool_name?(name), do: name in ["complete_task", "fail_task"]
+  defp terminal_action("complete_task"), do: "COMPLETE"
+  defp terminal_action("fail_task"), do: "FAIL"
+  defp terminal_action(_name), do: "TERMINAL"
+
   defp tool_event_id(%Event{type: :tool_call} = event), do: event.id
+
+  defp tool_event_id(%Event{type: :model_tool_call, data: data}),
+    do: data_text(data, "tool_call_id", "")
 
   defp tool_event_id(%Event{data: data}), do: data_text(data, "call_event_id", "")
 

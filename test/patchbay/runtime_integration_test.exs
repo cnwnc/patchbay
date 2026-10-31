@@ -4,6 +4,7 @@ defmodule Patchbay.RuntimeIntegrationTest do
   alias Patchbay.CLI.Manager
   alias Patchbay.Definition
   alias Patchbay.Runtime
+  alias Patchbay.Provider.ToolCall
   alias Patchbay.Worker.Operations
   alias Patchbay.WorkerSupervisor
 
@@ -439,6 +440,119 @@ defmodule Patchbay.RuntimeIntegrationTest do
     assert {:ok, _stopped} = Runtime.stop_agent(runtime, id)
   end
 
+  test "workspace destroy runs after finalize when complete_task ends the run", context do
+    id = "destroy-complete"
+    definition = teardown_definition(context, id, "destroy")
+    {supervisor, manager, runtime} = start_teardown_runtime(context, id, definition)
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    workspace = Path.join([context.tmp, "workspaces", id])
+    assert File.dir?(workspace)
+    File.write!(Path.join(workspace, "agent-file.txt"), "owned")
+    result_dir = Path.join([context.tmp, "results", id])
+    assert File.dir?(result_dir)
+
+    call = ToolCall.new("call-terminal-1", "complete_task", %{"results" => %{}})
+    assert :ok = Runtime.runner_complete(runtime, id, call, %{})
+
+    assert {:ok, agent} = Runtime.get_agent(runtime, id)
+    assert agent.status == :stopped
+    assert agent.run_status == :completed
+    refute File.exists?(workspace)
+    assert File.dir?(result_dir)
+
+    assert {:ok, events} = Runtime.list_events(runtime, id)
+    destroyed = Enum.find(events, &(&1.type == :workspace_destroyed))
+    assert destroyed
+    assert destroyed.data["action"] == "destroy"
+    assert destroyed.data["path"] == workspace
+
+    assert eventually(fn -> WorkerSupervisor.list_workers(supervisor) == [] end, 10_000)
+    safe_stop(manager)
+  end
+
+  test "workspace export copies to the result area and emits the path", context do
+    id = "export-complete"
+    definition = teardown_definition(context, id, "export")
+    {_supervisor, manager, runtime} = start_teardown_runtime(context, id, definition)
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    workspace = Path.join([context.tmp, "workspaces", id])
+    assert File.dir?(workspace)
+    File.mkdir_p!(Path.join(workspace, "notes"))
+    File.write!(Path.join(workspace, "notes/exported.txt"), "kept")
+
+    call = ToolCall.new("call-terminal-2", "complete_task", %{"results" => %{}})
+    assert :ok = Runtime.runner_complete(runtime, id, call, %{})
+
+    destination = Path.join([context.tmp, "results", id, "workspace"])
+    assert File.read!(Path.join(destination, "notes/exported.txt")) == "kept"
+    refute File.exists?(workspace)
+
+    assert {:ok, events} = Runtime.list_events(runtime, id)
+    exported = Enum.find(events, &(&1.type == :workspace_exported))
+    assert exported
+    assert exported.data["path"] == destination
+
+    safe_stop(manager)
+  end
+
+  test "workspace teardown also runs on fail_task and operator stop", context do
+    for {id, finish} <- [{"destroy-fail", :fail}, {"destroy-stop", :stop}] do
+      definition = teardown_definition(context, id, "destroy")
+      {_supervisor, manager, runtime} = start_teardown_runtime(context, id, definition)
+
+      assert {:ok, _running} =
+               Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+      workspace = Path.join([context.tmp, "workspaces", id])
+      assert File.dir?(workspace)
+
+      case finish do
+        :fail ->
+          call = ToolCall.new("call-terminal-3", "fail_task", %{"reason" => "stopped"})
+          assert :ok = Runtime.runner_fail(runtime, id, call, "stopped")
+
+        :stop ->
+          assert {:ok, stopped} = Runtime.stop_agent(runtime, id)
+          assert stopped.status == :stopped
+      end
+
+      refute File.exists?(workspace)
+      safe_stop(runtime)
+      safe_stop(manager)
+    end
+  end
+
+  test "retain leaves the workspace", context do
+    id = "retain-complete"
+    definition = teardown_definition(context, id, "retain")
+    {_supervisor, manager, runtime} = start_teardown_runtime(context, id, definition)
+    on_exit(fn -> safe_stop(runtime) end)
+
+    assert {:ok, _running} =
+             Runtime.start_agent(runtime, id, timeout: 10_000, await_timeout: 20_000)
+
+    workspace = Path.join([context.tmp, "workspaces", id])
+    File.write!(Path.join(workspace, "retained.txt"), "kept")
+
+    call = ToolCall.new("call-terminal-4", "complete_task", %{"results" => %{}})
+    assert :ok = Runtime.runner_complete(runtime, id, call, %{})
+
+    assert File.read!(Path.join(workspace, "retained.txt")) == "kept"
+
+    assert {:ok, events} = Runtime.list_events(runtime, id)
+    refute Enum.any?(events, &(&1.type in [:workspace_exported, :workspace_destroyed]))
+
+    safe_stop(manager)
+  end
+
   defp hook_definition(context, id, sh) do
     config_root = Path.join(context.tmp, "config")
     agent_dir = Path.join([config_root, "agents", id])
@@ -458,7 +572,7 @@ defmodule Patchbay.RuntimeIntegrationTest do
     [[lifecycle.init]]
     name = "scratch"
     executable = "#{shell}"
-    argv = ["-c", "mkdir -p {%workspace}/run/deep/nested && echo worker-written > {%workspace}/run/deep/nested/proof.txt && printf %s $PATCHBAY_WORKER_INSTANCE > {%workspace}/worker-instance.txt"]
+    argv = ["-c", "test -d {%workspace} && mkdir -p {%workspace}/run/deep/nested && echo worker-written > {%workspace}/run/deep/nested/proof.txt && printf %s $PATCHBAY_WORKER_INSTANCE > {%workspace}/worker-instance.txt"]
 
     [[lifecycle.finalize]]
     name = "leave"
@@ -535,6 +649,46 @@ defmodule Patchbay.RuntimeIntegrationTest do
 
     {:ok, definition} = Definition.parse(body)
     definition
+  end
+
+  defp teardown_definition(context, id, action) do
+    config_root = Path.join(context.tmp, "config")
+    agent_dir = Path.join([config_root, "agents", id])
+    File.mkdir_p!(agent_dir)
+
+    File.write!(Path.join(agent_dir, "agent.toml"), """
+    format-version = 1
+    id = "#{id}"
+
+    [model]
+    name = "test-model"
+
+    [lifecycle]
+    kind = "one-shot"
+
+    [teardown]
+    workspace = "#{action}"
+    """)
+
+    assert {:ok, definition} = Definition.load(agent_dir)
+    definition
+  end
+
+  defp start_teardown_runtime(context, id, definition) do
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+
+    {:ok, runtime} =
+      Runtime.start_link(
+        definitions: %{id => definition},
+        state_dir: context.state_dir,
+        workspace_dir: Path.join(context.tmp, "workspaces"),
+        result_dir: Path.join(context.tmp, "results"),
+        manager: manager
+      )
+
+    {supervisor, manager, runtime}
   end
 
   defp start_supervisor(context) do

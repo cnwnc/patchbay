@@ -75,6 +75,22 @@ defmodule PatchbayWeb.ConsoleLiveTest do
     assert html =~ "STREAM"
   end
 
+  test "navigation orders console, config, and toolkits", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+
+    nav = view |> element("nav.global-nav") |> render()
+
+    assert nav =~ ~r/CONSOLE.*CONFIG.*TOOLKITS/s
+    assert nav =~ ~s(href="/toolkits")
+  end
+
+  test "configuration renders a client-side clock", %{conn: conn} do
+    {:ok, _view, html} = live(conn, "/config")
+
+    assert html =~ ~s(phx-hook="PatchbayClock")
+    assert html =~ "data-clock-time"
+  end
+
   test "configuration shows source, resolved data and prompts", %{conn: conn} do
     {:ok, _view, html} = live(conn, "/config")
 

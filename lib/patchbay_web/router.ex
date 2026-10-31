@@ -26,6 +26,8 @@ defmodule PatchbayWeb.Router do
       live("/console", ConsoleLive, :index)
       live("/config", ConfigurationLive, :index)
       live("/config/:id", ConfigurationLive, :show)
+      live("/toolkits", ToolkitLive, :index)
+      live("/toolkits/:id", ToolkitLive, :show)
     end
   end
 

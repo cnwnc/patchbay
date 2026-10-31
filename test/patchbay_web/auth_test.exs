@@ -11,7 +11,14 @@ defmodule PatchbayWeb.AuthTest do
   @endpoint PatchbayWeb.Endpoint
 
   test "unauthenticated HTTP routes are challenged without exposing the UI" do
-    for path <- ["/", "/console", "/config", "/config/researcher"] do
+    for path <- [
+          "/",
+          "/console",
+          "/config",
+          "/config/researcher",
+          "/toolkits",
+          "/toolkits/filesystem"
+        ] do
       conn = get(build_conn(), path)
 
       assert conn.status == 401

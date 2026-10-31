@@ -46,6 +46,8 @@ defmodule Patchbay.Runtime.WorkerClient do
   @callback execute(term(), binary(), binary(), map(), keyword() | timeout()) ::
               {:ok, map()} | {:error, term()}
   @callback stop_worker(term(), binary(), timeout()) :: {:ok, map()} | {:error, term()}
+  @callback teardown_workspace(term(), binary(), atom(), keyword()) ::
+              {:ok, map()} | {:error, term()}
   @callback transcript_path(term(), binary()) :: binary()
 end
 
@@ -70,6 +72,10 @@ defmodule Patchbay.Runtime.CLIManagerClient do
   @impl true
   def stop_worker(manager, worker_id, timeout),
     do: Manager.stop_worker(manager, worker_id, timeout)
+
+  @impl true
+  def teardown_workspace(manager, worker_id, action, opts),
+    do: Manager.teardown_workspace(manager, worker_id, action, opts)
 
   @impl true
   def transcript_path(manager, worker_id), do: Manager.transcript_path(manager, worker_id)
@@ -646,6 +652,7 @@ defmodule Patchbay.Runtime do
       agent = %{agent | activity: :thinking}
       state = put_agent(state, agent)
       state = record_context_message(state, agent, message)
+      call_event_id = terminal_event_id(call)
 
       state =
         emit(
@@ -656,10 +663,12 @@ defmodule Patchbay.Runtime do
             tool_name: call.name,
             tool_call_id: call.id,
             status: status,
-            result: output
+            result: output,
+            call_event_id: call_event_id
           })
         )
 
+      state = maybe_record_terminal_history(state, agent, call, status, output)
       {:reply, :ok, state}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -669,9 +678,11 @@ defmodule Patchbay.Runtime do
   def handle_call({:runner_complete, agent_id, call, results}, _from, state) do
     with {:ok, agent} <- runner_agent(state, agent_id) do
       results = Redact.redact(results, agent_secret_values(state, agent_id))
-      {agent, message} = append_tool_message(agent, call, terminal_output("completed", results))
+      output = terminal_output("completed", results)
+      {agent, message} = append_tool_message(agent, call, output)
       state = put_agent(state, agent)
       state = record_context_message(state, agent, message)
+      call_event_id = terminal_event_id(call)
 
       state =
         emit(
@@ -682,10 +693,13 @@ defmodule Patchbay.Runtime do
             tool_name: call.name,
             tool_call_id: call.id,
             status: "ok",
-            result: terminal_output("completed", results),
+            result: output,
+            call_event_id: call_event_id,
             builtin: true
           })
         )
+
+      state = maybe_record_terminal_history(state, agent, call, "ok", output)
 
       case publication_jobs(agent, results) do
         [] ->
@@ -709,6 +723,7 @@ defmodule Patchbay.Runtime do
       {agent, message} = append_tool_message(agent, call, output)
       state = put_agent(state, agent)
       state = record_context_message(state, agent, message)
+      call_event_id = terminal_event_id(call)
 
       state =
         emit(
@@ -718,12 +733,14 @@ defmodule Patchbay.Runtime do
           run_attrs(lifecycle_run(agent), active_attempt(agent), %{
             tool_name: call.name,
             tool_call_id: call.id,
-            status: "ok",
+            status: "error",
             result: output,
+            call_event_id: call_event_id,
             builtin: true
           })
         )
 
+      state = maybe_record_terminal_history(state, agent, call, "error", output)
       {:reply, :ok, fail_run(state, agent, reason)}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -1086,7 +1103,8 @@ defmodule Patchbay.Runtime do
               context_generation: next_context_generation(),
               terminal_result: nil,
               terminal_failure: nil,
-              finalize_state: nil
+              finalize_state: nil,
+              teardown_state: nil
           }
 
           state = put_agent(state, agent)
@@ -1223,6 +1241,7 @@ defmodule Patchbay.Runtime do
 
     state = finalize_once(state, hook_agent, run, attempt)
     stop_worker_best_effort(state, hook_agent)
+    state = run_workspace_teardown(state, hook_agent, run, attempt)
     state = forget_secret_values(state, agent.id)
     state = record_context_run(state, agent, :interrupted)
     {:error, reason, state}
@@ -1258,6 +1277,7 @@ defmodule Patchbay.Runtime do
           case stop_worker(state, agent, timeout) do
             :ok ->
               state = stop_runner(state, agent)
+              state = run_workspace_teardown(state, agent, lifecycle_run(agent), attempt)
               state = forget_secret_values(state, agent_id)
               agent = Map.fetch!(state.agents, agent_id)
               lifecycle = stop_lifecycle(agent.lifecycle, reason, now())
@@ -1626,9 +1646,11 @@ defmodule Patchbay.Runtime do
     run = lifecycle_run(agent)
     agent = %{agent | publisher: nil, stop_waiter: nil, status: :running, activity: :idle}
     state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
-    # Finalize hooks run before the worker is stopped; see do_stop.
+    # Finalize hooks run before the worker is stopped; see do_stop. Teardown
+    # runs after the stop so the supervisor acts on a quiet workspace.
     state = finalize_once(state, agent, run, attempt)
     stop_worker_best_effort(state, agent)
+    state = run_workspace_teardown(state, agent, run, attempt)
     state = forget_secret_values(state, agent.id)
 
     lifecycle = stop_lifecycle(agent.lifecycle, reason, now())
@@ -2183,9 +2205,11 @@ defmodule Patchbay.Runtime do
     attempt = active_attempt(agent)
     run = lifecycle_run(agent)
     state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
-    # Finalize hooks run before the worker is stopped; see do_stop.
+    # Finalize hooks run before the worker is stopped; see do_stop. Teardown
+    # runs after the stop so the supervisor acts on a quiet workspace.
     state = finalize_once(state, agent, run, attempt)
     stop_worker_best_effort(state, agent)
+    state = run_workspace_teardown(state, agent, run, attempt)
     state = forget_secret_values(state, agent.id)
     results = apply_result_warnings(results, outcomes)
 
@@ -2233,9 +2257,12 @@ defmodule Patchbay.Runtime do
 
   defp fail_run(state, agent, reason) do
     attempt = active_attempt(agent)
-    # Finalize hooks run before the worker is stopped; see do_stop.
-    state = finalize_once(state, agent, lifecycle_run(agent), attempt)
+    # Finalize hooks run before the worker is stopped; see do_stop. Teardown
+    # runs after the stop so the supervisor acts on a quiet workspace.
+    run = lifecycle_run(agent)
+    state = finalize_once(state, agent, run, attempt)
     stop_worker_best_effort(state, agent)
+    state = run_workspace_teardown(state, agent, run, attempt)
     state = forget_secret_values(state, agent.id)
 
     lifecycle =
@@ -2556,6 +2583,86 @@ defmodule Patchbay.Runtime do
     end
   end
 
+  # Teardown runs after artifacts have been copied and finalize hooks have
+  # finished. Destroy and export are executed by the worker supervisor, which
+  # runs as the agent user and owns the per-agent workspace and result tree;
+  # the manager only names the worker and the action.
+  defp run_workspace_teardown(state, %{teardown_state: :done}, _run, _attempt), do: state
+
+  defp run_workspace_teardown(state, agent, run, attempt) do
+    action = teardown_action(agent)
+
+    if action == :retain do
+      mark_teardown_done(state, agent)
+    else
+      teardown_result =
+        case {worker_id(agent), Map.get(agent, :workspace), state.manager} do
+          {{:ok, worker_id}, workspace, manager}
+          when is_binary(workspace) and not is_nil(manager) ->
+            safe_worker_call(fn ->
+              state.worker_client.teardown_workspace(
+                manager,
+                worker_id,
+                action,
+                timeout: @default_timeout
+              )
+            end)
+
+          _missing ->
+            {:error, :worker_unavailable}
+        end
+
+      case teardown_result do
+        {:ok, info} ->
+          path = Map.get(info, :path)
+
+          state =
+            emit(
+              state,
+              agent.id,
+              teardown_event(action),
+              run_attrs(run, attempt, %{
+                action: Atom.to_string(action),
+                path: path || ""
+              })
+            )
+
+          mark_teardown_done(state, agent)
+
+        {:error, reason} ->
+          state =
+            emit(
+              state,
+              agent.id,
+              :workspace_teardown_failed,
+              run_attrs(run, attempt, %{
+                action: Atom.to_string(action),
+                reason: reason
+              })
+            )
+
+          mark_teardown_done(state, agent)
+      end
+    end
+  end
+
+  defp mark_teardown_done(state, agent) do
+    case Map.fetch(state.agents, agent.id) do
+      {:ok, stored} -> put_agent(state, Map.put(stored, :teardown_state, :done))
+      :error -> put_agent(state, Map.put(agent, :teardown_state, :done))
+    end
+  end
+
+  defp teardown_action(%{definition: %{teardown: %{workspace: action}}})
+       when action in [:export, :destroy],
+       do: action
+
+  defp teardown_action(_agent), do: :retain
+
+  defp teardown_event(:export), do: :workspace_exported
+  defp teardown_event(:destroy), do: :workspace_destroyed
+  defp teardown_event(_action), do: :workspace_teardown_failed
+
   # Hooks run inside the agent worker as fixed operations. The worker owns
   # the agent workspace, so init and finalize hooks write agent-owned files
   # across the UID boundary; the manager only relays the execute request.
@@ -2638,6 +2745,50 @@ defmodule Patchbay.Runtime do
 
   defp hook_outcome({:ok, result}), do: {:ok, result}
   defp hook_outcome({:error, reason}), do: {:error, reason}
+
+  # The built-in terminal tools never pass through execute_tool, so their call
+  # and result would otherwise exist only as events. Recording a ToolHistory
+  # row keeps them in the same activity view and places the terminal outcome
+  # in the durable tool journal.
+  defp terminal_tool?(name), do: name in ["complete_task", "fail_task"]
+
+  defp terminal_event_id(%{name: name, id: id}) when is_binary(id) and id != "" do
+    if terminal_tool?(name), do: id, else: nil
+  end
+
+  defp terminal_event_id(_call), do: nil
+
+  defp maybe_record_terminal_history(state, agent, call, status, output) do
+    if terminal_tool?(call.name) and is_binary(call.id) and call.id != "" do
+      declared = %{toolkit_id: "builtin"}
+      result_status = if status in ["ok", :ok], do: :ok, else: :error
+
+      result = {:ok, %{status: result_status, output: to_string(output)}}
+      arguments = Map.get(call, :arguments) || %{}
+
+      case record_tool_history(
+             state,
+             agent,
+             declared,
+             call.name,
+             arguments,
+             result,
+             call.id
+           ) do
+        {:ok, state} ->
+          state
+
+        {:error, reason, state} ->
+          Logger.warning(
+            "terminal tool history write failed for #{inspect(agent.id)} #{call.name}: #{inspect(reason)}"
+          )
+
+          state
+      end
+    else
+      state
+    end
+  end
 
   defp record_tool_history(state, agent, declared, tool_name, arguments, result, event_id) do
     path = Path.join(tool_history_dir(state.state_dir), agent.id <> ".pbth")
@@ -3185,6 +3336,7 @@ defmodule Patchbay.Runtime do
       terminal_result: nil,
       terminal_failure: nil,
       finalize_state: nil,
+      teardown_state: nil,
       publisher: nil,
       stop_waiter: nil
     }

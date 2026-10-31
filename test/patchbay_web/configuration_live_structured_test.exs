@@ -231,19 +231,13 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
     assert File.read!(path) == original
   end
 
-  test "a dirty structured form survives a tick and a config reload", %{conn: conn} do
+  test "a dirty structured form survives a config reload", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/config/researcher")
     view |> element("button[phx-value-tab='structured']") |> render_click()
 
     view
     |> form("#structured-form", %{"structured" => %{"model" => %{"name" => "model-draft"}}})
     |> render_change()
-
-    send(view.pid, :tick)
-    html = render(view)
-
-    assert html =~ "model-draft"
-    assert html =~ "UNSAVED CHANGES"
 
     Phoenix.PubSub.broadcast(Patchbay.PubSub, "config", {:config, :reloaded})
     html = render(view)
@@ -623,6 +617,41 @@ defmodule PatchbayWeb.ConfigurationLiveStructuredTest do
 
     assert html =~ "declares env"
     assert html =~ "more than once"
+  end
+
+  test "clearing an agent's secret environment removes config.env", %{
+    conn: conn,
+    path: path
+  } do
+    File.write!(path, full_body())
+    assert {:ok, _report} = DefinitionRegistry.reload()
+
+    {:ok, view, _html} = live(conn, "/config/researcher")
+    view |> element("button[phx-value-tab='structured']") |> render_click()
+
+    html =
+      view
+      |> form("#structured-form", %{
+        "structured" => %{
+          "toolkits" => %{
+            "0" => %{"root" => "work"},
+            "1" => %{"env" => ""}
+          }
+        }
+      })
+      |> render_submit()
+
+    assert html =~ "Structured configuration saved"
+
+    content = File.read!(path)
+    assert content =~ ~s(toolkit = "secret-env")
+    refute content =~ "GH_TOKEN"
+    refute content =~ "config.env"
+
+    assert {:ok, snapshot} = DefinitionRegistry.get("researcher")
+    secret_toolkit = Enum.find(snapshot.definition.toolkits, &(&1.toolkit == "secret-env"))
+    assert secret_toolkit
+    refute Map.has_key?(secret_toolkit.config, "env")
   end
 
   test "operation arguments and lifecycle hooks edit and roundtrip", %{

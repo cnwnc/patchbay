@@ -121,7 +121,9 @@ defmodule PatchbayWeb.ConsoleLiveStreamScrollTest do
     start_fake!([summary("researcher")])
     {:ok, _view, html} = live(conn, "/")
 
-    assert html =~ ~s(hooks: {PatchbayFlash, PatchbayStream, PatchbayDetails})
+    assert html =~
+             ~s(hooks: {PatchbayFlash, PatchbayStream, PatchbaySelection, PatchbayDetails, PatchbayClock})
+
     assert html =~ ~s{id="stream-list"}
     assert html =~ ~s{phx-hook="PatchbayStream"}
     assert html =~ ~s{data-stream-agent="researcher"}

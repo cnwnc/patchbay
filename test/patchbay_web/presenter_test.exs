@@ -94,5 +94,115 @@ defmodule PatchbayWeb.PresenterTest do
       assert Enum.map(items, & &1.id) == ["evt-1", "evt-2", "tool-call-1"]
       assert Enum.map(stream_items(events, history), & &1.id) == Enum.map(items, & &1.id)
     end
+
+    test "renders terminal model calls once, distinctly, with their full result" do
+      result = ~s({"status":"completed","value":{"summary":"all done"}})
+      arguments = ~s(%{"results" => %{"summary" => "all done"}})
+
+      history = [
+        %ToolHistory{
+          sequence: "1",
+          timestamp: "2026-01-01T00:05:01Z",
+          call_id: "evt-echo-call",
+          toolkit_id: "filesystem",
+          tool_name: "read",
+          arguments: ~s(%{"path" => "notes.txt"}),
+          status: "ok",
+          truncated_result: "file bytes",
+          transcript_event_id: "evt-echo-call"
+        },
+        %ToolHistory{
+          sequence: "2",
+          timestamp: "2026-01-01T00:05:02Z",
+          call_id: "call-2",
+          toolkit_id: "builtin",
+          tool_name: "complete_task",
+          arguments: arguments,
+          status: "ok",
+          truncated_result: result,
+          transcript_event_id: "call-2"
+        }
+      ]
+
+      events = [
+        %Event{
+          id: "evt-chat",
+          sequence: 1,
+          at: "2026-01-01T00:05:00Z",
+          type: :model_message,
+          agent_id: "researcher",
+          data: %{"content" => "working on it", "finish_reason" => "tool_calls"}
+        },
+        %Event{
+          id: "evt-mtc-terminal",
+          sequence: 2,
+          at: "2026-01-01T00:05:02Z",
+          type: :model_tool_call,
+          agent_id: "researcher",
+          data: %{
+            "tool_call_id" => "call-2",
+            "tool_name" => "complete_task",
+            "arguments" => arguments
+          }
+        },
+        %Event{
+          id: "evt-mtc-echo",
+          sequence: 3,
+          at: "2026-01-01T00:05:01Z",
+          type: :model_tool_call,
+          agent_id: "researcher",
+          data: %{
+            "tool_call_id" => "call-1",
+            "tool_name" => "read",
+            "arguments" => ~s(%{"path" => "notes.txt"})
+          }
+        },
+        %Event{
+          id: "evt-echo-call",
+          sequence: 4,
+          at: "2026-01-01T00:05:01Z",
+          type: :tool_call,
+          agent_id: "researcher",
+          data: %{"tool_name" => "read", "arguments" => ~s(%{"path" => "notes.txt"})}
+        },
+        %Event{
+          id: "evt-echo-result",
+          sequence: 5,
+          at: "2026-01-01T00:05:01Z",
+          type: :tool_result,
+          agent_id: "researcher",
+          data: %{"tool_name" => "read", "call_event_id" => "evt-echo-call", "status" => "ok"}
+        },
+        %Event{
+          id: "evt-terminal",
+          sequence: 6,
+          at: "2026-01-01T00:05:02Z",
+          type: :tool_result,
+          agent_id: "researcher",
+          data: %{
+            "tool_name" => "complete_task",
+            "tool_call_id" => "call-2",
+            "status" => "ok",
+            "call_event_id" => "call-2",
+            "builtin" => true
+          }
+        }
+      ]
+
+      items = stream_items(events, history)
+
+      assert Enum.any?(items, &(&1.kind == :chat and &1.text == "working on it"))
+      assert Enum.any?(items, &(&1.id == "evt-mtc-echo"))
+      refute Enum.any?(items, &(&1.id == "evt-mtc-terminal"))
+      refute Enum.any?(items, &(&1.id == "evt-echo-call"))
+      refute Enum.any?(items, &(&1.id == "evt-terminal"))
+
+      assert [terminal] = Enum.filter(items, &(&1.kind == :tool and &1.terminal))
+      assert terminal.id == "tool-call-2"
+      assert terminal.action == "COMPLETE"
+      assert terminal.target == ""
+      assert terminal.result == result
+      assert Enum.count(items, &(&1.kind == :tool and &1.result == result)) == 1
+    end
   end
 end
