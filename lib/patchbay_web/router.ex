@@ -11,6 +11,13 @@ defmodule PatchbayWeb.Router do
     plug(:put_secure_browser_headers)
   end
 
+  # Serving artifact bytes: same UI credentials, no session or HTML
+  # negotiation requirements so curl and wget work as clients.
+  pipeline :artifacts do
+    plug(:fetch_session)
+    plug(PatchbayWeb.Auth)
+  end
+
   scope "/", PatchbayWeb do
     pipe_through(:browser)
 
@@ -20,5 +27,11 @@ defmodule PatchbayWeb.Router do
       live("/config", ConfigurationLive, :index)
       live("/config/:id", ConfigurationLive, :show)
     end
+  end
+
+  scope "/artifacts", PatchbayWeb do
+    pipe_through(:artifacts)
+
+    get("/:agent_id/:filename", ArtifactsController, :show)
   end
 end

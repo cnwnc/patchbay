@@ -409,6 +409,55 @@ defmodule Patchbay.IntegrationTest do
     refute match?({:ok, %{status: :ok}}, result)
   end
 
+  test "manager redacts retained secret values from worker transcript events", context do
+    supervisor = start_supervisor(context)
+    manager = start_manager(context, supervisor)
+
+    on_exit(fn -> safe_stop(manager) end)
+
+    assert eventually(fn -> Manager.control_status(manager) == :connected end, 10_000)
+    secret = "pb-secret-token-0123456789"
+
+    assert {:ok, %{worker_id: "agent-secret", status: :starting}} =
+             Manager.start_worker(manager, "agent-secret",
+               timeout: 10_000,
+               secrets: %{"DEMO_TOKEN" => secret}
+             )
+
+    assert {:ok, %{status: :ready}} = Manager.await_worker(manager, "agent-secret", 20_000)
+
+    assert {:ok, result} =
+             Manager.execute(manager, "agent-secret", "echo", %{"text" => secret}, 10_000)
+
+    assert result.output == secret <> "\n"
+
+    assert {:ok, %{status: :stopping}} = Manager.stop_worker(manager, "agent-secret")
+
+    assert eventually(
+             fn ->
+               worker = :sys.get_state(manager).workers["agent-secret"]
+               worker.status == :exited and worker.secrets == %{}
+             end,
+             10_000
+           )
+
+    transcript = Manager.transcript_path(manager, "agent-secret")
+    raw = File.read!(transcript)
+    refute raw =~ secret
+    assert raw =~ "[redacted]"
+
+    {:ok, messages, _stream} = Stream.feed(Stream.new(), raw)
+    events = Enum.map(messages, fn {:event, event} -> event end)
+
+    assert Enum.any?(events, fn event ->
+             event.type == :tool_call and event.arguments == %{"text" => "[redacted]"}
+           end)
+
+    assert Enum.any?(events, fn event ->
+             event.type == :tool_result and event.output == "[redacted]\n"
+           end)
+  end
+
   defp safe_stop(pid) do
     GenServer.stop(pid)
   catch

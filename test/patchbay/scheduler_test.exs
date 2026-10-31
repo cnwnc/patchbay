@@ -279,7 +279,17 @@ defmodule Patchbay.SchedulerTest do
       |> Keyword.put(:clock, clock)
 
     {:ok, scheduler} = Scheduler.start_link(opts)
-    on_exit(fn -> if Process.alive?(scheduler), do: GenServer.stop(scheduler) end)
+
+    on_exit(fn ->
+      if Process.alive?(scheduler) do
+        try do
+          GenServer.stop(scheduler)
+        catch
+          :exit, _reason -> :ok
+        end
+      end
+    end)
+
     scheduler
   end
 

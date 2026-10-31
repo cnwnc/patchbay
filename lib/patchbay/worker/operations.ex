@@ -83,7 +83,7 @@ defmodule Patchbay.Worker.Operations do
          {:ok, argv, workspace} <- render_argv(operation, values, opts) do
       exec_opts =
         opts
-        |> Keyword.take([:timeout, :max_output_bytes])
+        |> Keyword.take([:timeout, :max_output_bytes, :secret_names])
         |> Keyword.put(:cd, workspace)
 
       case Exec.run(operation.executable, argv, exec_opts) do
@@ -99,6 +99,22 @@ defmodule Patchbay.Worker.Operations do
   @doc "Lists operation names in declaration order."
   @spec names([operation()]) :: [binary()]
   def names(operations), do: Enum.map(operations, & &1.name)
+
+  @doc """
+  Canonicalizes an absolute path: `Path.expand/1` normalization followed by
+  symlink resolution of existing components.
+
+  The result of `Path.expand/2` includes `..` and `.` segments in place, so
+  lexical normalization happens before components are walked; existing
+  components are then read with `File.lstat/1` and symlinks are resolved
+  within a depth limit. A missing tail stays lexical, so the caller can
+  confine a path that does not exist yet.
+
+  Shared by tool-path confinement and by artifact reading across the
+  worker/manager UID split.
+  """
+  @spec canonical(binary()) :: {:ok, binary()} | {:error, :invalid_path}
+  def canonical(path) when is_binary(path), do: canonical_allow_missing(path)
 
   @doc """
   Validates operations declared by an agent definition.
@@ -225,9 +241,16 @@ defmodule Patchbay.Worker.Operations do
   end
 
   defp validate_name(name) do
-    if Name.valid?(name),
-      do: :ok,
-      else: {:error, {:invalid_operation_name, name}}
+    cond do
+      not Name.valid?(name) ->
+        {:error, {:invalid_operation_name, name}}
+
+      Patchbay.Worker.Artifacts.reserved?(name) ->
+        {:error, {:reserved_operation_name, name}}
+
+      true ->
+        :ok
+    end
   end
 
   defp validate_executable(executable) do

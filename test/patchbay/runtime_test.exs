@@ -62,7 +62,8 @@ defmodule Patchbay.RuntimeTest.Manager do
   @impl true
   def handle_call(:calls, _from, state), do: {:reply, Enum.reverse(state.calls), state}
 
-  def handle_call({:set, key, value}, _from, state) when key in [:start_results, :stop_result] do
+  def handle_call({:set, key, value}, _from, state)
+      when key in [:start_results, :stop_result, :execute_result] do
     {:reply, :ok, Map.put(state, key, value)}
   end
 
@@ -175,6 +176,7 @@ defmodule Patchbay.RuntimeTest do
   alias Patchbay.Event
   alias Patchbay.Runtime
   alias Patchbay.RuntimeTest.{Definitions, Manager, RegistryLike, WorkerClient}
+  alias Patchbay.Secrets
 
   setup do
     tmp =
@@ -590,6 +592,90 @@ defmodule Patchbay.RuntimeTest do
     Manager.set(context.stub, :stop_result, {:ok, %{status: :stopping}})
     assert {:ok, stopped} = Runtime.stop_agent(runtime, "alpha")
     assert stopped.status == :stopped
+  end
+
+  test "starts a worker with only the secrets declared by that agent", context do
+    secret = "ghp_runtime_secret_value"
+    :ok = Secrets.put(Path.join(context.tmp, "state/secrets"), "github-main", secret)
+
+    Definitions.put(secret_definition("alpha"))
+    Definitions.put(definition("beta"))
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+    assert {:ok, _running} = Runtime.start_agent(runtime, "beta")
+
+    starts = Enum.filter(Manager.calls(context.stub), &match?({:start_worker, _, _}, &1))
+
+    alpha =
+      Enum.find(starts, fn {:start_worker, worker_id, _opts} -> worker_id == "agent.alpha" end)
+
+    beta =
+      Enum.find(starts, fn {:start_worker, worker_id, _opts} -> worker_id == "agent.beta" end)
+
+    assert {:start_worker, "agent.alpha", alpha_opts} = alpha
+    assert alpha_opts[:secrets] == %{"GH_TOKEN" => secret}
+
+    assert {:start_worker, "agent.beta", beta_opts} = beta
+    refute Keyword.has_key?(beta_opts, :secrets)
+  end
+
+  test "does not resolve the secret store for an agent without declarations", context do
+    Definitions.put(definition("alpha"))
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+    refute File.exists?(Path.join(context.tmp, "state/secrets"))
+  end
+
+  test "a missing declared secret fails the start before any worker request", context do
+    Definitions.put(secret_definition("alpha"))
+    runtime = start_runtime(context)
+
+    assert {:error, {:missing_secret, "github-main"}} = Runtime.start_agent(runtime, "alpha")
+
+    refute Enum.any?(Manager.calls(context.stub), &match?({:start_worker, _, _}, &1))
+  end
+
+  test "redacts injected literal values from tool results, events, and history", context do
+    secret = "ghp_runtime_secret_value"
+    :ok = Secrets.put(Path.join(context.tmp, "state/secrets"), "github-main", secret)
+
+    Manager.set(
+      context.stub,
+      :execute_result,
+      {:ok, %{status: :ok, output: "token=#{secret}", exit_status: 0}}
+    )
+
+    Definitions.put(secret_definition("alpha", tools: true))
+    runtime = start_runtime(context)
+
+    assert {:ok, _running} = Runtime.start_agent(runtime, "alpha")
+    assert {:ok, result} = Runtime.execute_tool(runtime, "alpha", "echo", %{"text" => "x"})
+    assert result.output == "token=[redacted]"
+
+    assert {:ok, [record]} = Runtime.tool_history(runtime, "alpha")
+    assert record.truncated_result == "token=[redacted]"
+    refute inspect(record) =~ secret
+
+    assert {:ok, events} = Runtime.list_events(runtime, "alpha")
+    refute inspect(events) =~ secret
+
+    assert Enum.any?(events, fn event ->
+             event.type == :tool_result and event.data["result"] == "token=[redacted]"
+           end)
+  end
+
+  defp secret_definition(id, opts \\ []) do
+    definition = definition(id, opts)
+
+    secret_toolkit = %Patchbay.Definition.Toolkit{
+      toolkit: "secret-env",
+      native: "secret-env",
+      config: %{"env" => %{"GH_TOKEN" => "secret://github-main"}}
+    }
+
+    %{definition | toolkits: [secret_toolkit | definition.toolkits]}
   end
 
   defp start_runtime(context, opts \\ []) do

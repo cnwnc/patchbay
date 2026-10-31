@@ -4,8 +4,10 @@ defmodule Patchbay.WorkerSupervisor do
 
   The supervisor listens on a loopback TCP control channel for one or more
   managers. A manager may ask it to start or stop a worker. The supervisor
-  chooses the executable and argv itself; requests cannot supply a command,
-  shell string, or environment.
+  chooses the executable and argv itself; requests cannot supply a command or
+  shell string. A start request may carry one explicit secret map of
+  environment variable name to value. Names are validated and only that
+  worker receives the values; secret values never appear in argv or logs.
 
   Each worker is a separate OS process started with
   `Port.open({:spawn_executable, path}, args: argv)`, so no shell parses the
@@ -23,6 +25,7 @@ defmodule Patchbay.WorkerSupervisor do
   alias Patchbay.Worker.Protocol
   alias Patchbay.Worker.Protocol.Stream
   alias Patchbay.Worker.Token
+  alias Patchbay.Secrets
   alias Patchbay.Transcript
 
   @loopback_hosts ["127.0.0.1", "localhost"]
@@ -239,6 +242,7 @@ defmodule Patchbay.WorkerSupervisor do
          {:ok, host} <- manager_host(request),
          {:ok, manager_port} <- manager_port(request),
          :ok <- check_worker_slot(worker_id, state),
+         {:ok, secrets} <- worker_secrets(request),
          {:ok, paths} <- prepare_agent_paths(request, worker_id, state),
          {:ok, operations_path} <- prepare_operations(request, worker_id, paths, state) do
       case start_worker_process(
@@ -248,6 +252,8 @@ defmodule Patchbay.WorkerSupervisor do
              manager_port,
              operations_path,
              paths.workspace,
+             paths.result_dir,
+             secrets,
              state
            ) do
         {:ok, worker} ->
@@ -365,6 +371,15 @@ defmodule Patchbay.WorkerSupervisor do
     do: {:ok, port}
 
   defp manager_port(_request), do: {:error, :invalid_manager_port}
+
+  defp worker_secrets(%{secrets: secrets}) do
+    case Secrets.validate_map(secrets) do
+      :ok -> {:ok, secrets}
+      {:error, _reason} -> {:error, :invalid_secrets}
+    end
+  end
+
+  defp worker_secrets(_request), do: {:ok, %{}}
 
   defp prepare_agent_paths(request, worker_id, state) do
     with {:ok, workspace} <-
@@ -504,12 +519,15 @@ defmodule Patchbay.WorkerSupervisor do
          manager_port,
          operations_path,
          workspace,
+         result_dir,
+         secrets,
          state
        ) do
     instance = Token.generate()
 
     args =
       state.worker_args ++
+        optional_arg("--result-dir", result_dir) ++
         [
           "--worker-id",
           worker_id,
@@ -520,13 +538,19 @@ defmodule Patchbay.WorkerSupervisor do
         ]
 
     env =
-      Env.worker_env(%{
-        "PATCHBAY_HOME" => System.get_env("PATCHBAY_HOME"),
-        "PATCHBAY_WORKER_TOKEN" => token,
-        "PATCHBAY_OPERATIONS" => operations_path,
-        "PATCHBAY_WORKSPACE" => workspace,
-        Env.instance_variable() => instance
-      })
+      Env.worker_env(
+        %{
+          "PATCHBAY_HOME" => System.get_env("PATCHBAY_HOME"),
+          "PATCHBAY_WORKER_TOKEN" => token,
+          "PATCHBAY_OPERATIONS" => operations_path,
+          "PATCHBAY_WORKSPACE" => workspace,
+          "PATCHBAY_RESULT_DIR" => result_dir,
+          Env.instance_variable() => instance
+        }
+        |> maybe_put_secret_names(secrets),
+        System.get_env(),
+        secrets
+      )
 
     {spawn_executable, spawn_args} =
       ProcessGroup.command(state.worker_executable, args)
@@ -569,6 +593,15 @@ defmodule Patchbay.WorkerSupervisor do
 
   defp cd_option(nil), do: []
   defp cd_option(path), do: [{:cd, to_charlist(path)}]
+
+  defp optional_arg(_flag, nil), do: []
+  defp optional_arg(flag, value), do: [flag, value]
+
+  defp maybe_put_secret_names(extra, secrets) when map_size(secrets) == 0, do: extra
+
+  defp maybe_put_secret_names(extra, secrets) do
+    Map.put(extra, Env.secret_names_variable(), Env.encode_secret_names(Map.keys(secrets)))
+  end
 
   defp cleanup_worker(worker_id, status, state) do
     case Map.pop(state.workers, worker_id) do

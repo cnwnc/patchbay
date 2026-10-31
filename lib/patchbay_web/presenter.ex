@@ -15,6 +15,7 @@ defmodule PatchbayWeb.Presenter do
   @detail_limit 320
   @tool_detail_limit 160
   @trace_window_ms 180_000
+  @trace_bucket_ms 10_000
 
   def filters, do: @filters
 
@@ -99,13 +100,13 @@ defmodule PatchbayWeb.Presenter do
   def trace_points(events), do: trace_points(events, DateTime.utc_now())
 
   def trace_points(events, now) do
-    now_ms = at_ms(now)
-    cutoff = now_ms - @trace_window_ms
+    window_end = trace_window_end(at_ms(now))
+    cutoff = window_end - @trace_window_ms
 
     points =
       events
       |> Enum.map(fn event -> {at_ms(event_at(event)), event_type(event)} end)
-      |> Enum.filter(fn {at, _type} -> at > cutoff and at <= now_ms end)
+      |> Enum.filter(fn {at, _type} -> at > cutoff and at <= window_end end)
       |> Enum.sort_by(fn {at, _type} -> at end)
       |> Enum.map(fn {at, type} ->
         x = round((at - cutoff) * 76 / @trace_window_ms)
@@ -122,6 +123,10 @@ defmodule PatchbayWeb.Presenter do
         |> Kernel.++([{76, 16}])
         |> Enum.map_join(" ", fn {x, y} -> "#{x},#{y}" end)
     end
+  end
+
+  defp trace_window_end(now_ms) do
+    div(now_ms, @trace_bucket_ms) * @trace_bucket_ms + @trace_bucket_ms
   end
 
   defp trace_height(type)
@@ -236,6 +241,7 @@ defmodule PatchbayWeb.Presenter do
   def activity_label(:thinking), do: "THINKING"
   def activity_label(:executing_tool), do: "TOOL"
   def activity_label(:waiting), do: "WAITING"
+  def activity_label(:publishing), do: "PUBLISHING"
   def activity_label(_activity), do: "IDLE"
 
   def event_summary(event) do
@@ -382,6 +388,7 @@ defmodule PatchbayWeb.Presenter do
       Enum.map(history, fn record ->
         %{
           kind: :tool,
+          id: "tool-#{record.call_id}",
           at: at_ms(record.timestamp),
           time: event_time(record),
           name: record.tool_name,
@@ -405,6 +412,7 @@ defmodule PatchbayWeb.Presenter do
     %{
       kind: :chat,
       role: :operator,
+      id: event.id,
       type: "OPERATOR",
       at: at_ms(event.at),
       time: event_time(event),
@@ -417,6 +425,7 @@ defmodule PatchbayWeb.Presenter do
     %{
       kind: :chat,
       role: :agent,
+      id: event.id,
       type: "AGENT",
       at: at_ms(event.at),
       time: event_time(event),
@@ -431,6 +440,7 @@ defmodule PatchbayWeb.Presenter do
 
     %{
       kind: :event,
+      id: event.id,
       at: at_ms(event.at),
       time: event_time(event),
       type: "EVENT",

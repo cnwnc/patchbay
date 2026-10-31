@@ -18,6 +18,7 @@ defmodule Patchbay.CLI do
     run-manager             Run the manager service
     run-worker-supervisor   Run the worker supervisor service
     run-worker              Run one worker (started by the worker supervisor)
+    secrets <command>       Manage the named secret store
     help                    Show this message
   """
 
@@ -35,6 +36,9 @@ defmodule Patchbay.CLI do
 
       ["run-worker" | rest] ->
         Patchbay.Worker.main(rest)
+
+      ["secrets" | rest] ->
+        Patchbay.CLI.Secrets.main(rest)
 
       ["help"] ->
         IO.puts(@usage)

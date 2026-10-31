@@ -6,11 +6,33 @@ defmodule PatchbayWeb.ConfigurationLive do
   import PatchbayWeb.Presenter
 
   alias Patchbay.Config.Source
+  alias Patchbay.Config.Structured
   alias Patchbay.Definition.Error
   alias Patchbay.DefinitionRegistry
 
   @pubsub Patchbay.PubSub
   @flash_timeout 6_000
+
+  @draft_assigns [
+    :source,
+    :editable_source,
+    :source_hash,
+    :source_path,
+    :source_absent?,
+    :source_editable?,
+    :source_note,
+    :source_draft,
+    :source_baseline,
+    :source_dirty?,
+    :editor_tab,
+    :structured,
+    :structured_base,
+    :structured_document,
+    :structured_available?,
+    :structured_dirty?,
+    :structured_note,
+    :structured_toolkit_names
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -36,6 +58,14 @@ defmodule PatchbayWeb.ConfigurationLive do
        source_draft: nil,
        source_baseline: nil,
        source_dirty?: false,
+       editor_tab: "source",
+       structured: nil,
+       structured_base: nil,
+       structured_document: nil,
+       structured_available?: false,
+       structured_dirty?: false,
+       structured_note: nil,
+       structured_toolkit_names: [],
        pending_select: nil,
        config_dir: nil,
        resolved: "",
@@ -55,7 +85,12 @@ defmodule PatchbayWeb.ConfigurationLive do
     socket =
       if discard_draft?(socket, requested_id) do
         socket
-        |> assign(source_draft: nil, source_dirty?: false)
+        |> assign(
+          source_draft: nil,
+          source_dirty?: false,
+          structured: nil,
+          structured_dirty?: false
+        )
         |> notify(:info, "Discarded unsaved changes to #{socket.assigns.selected}.")
       else
         socket
@@ -70,7 +105,7 @@ defmodule PatchbayWeb.ConfigurationLive do
       id == socket.assigns.selected ->
         {:noreply, assign(socket, pending_select: nil)}
 
-      socket.assigns.source_dirty? ->
+      socket.assigns.source_dirty? or socket.assigns.structured_dirty? ->
         {:noreply, assign(socket, pending_select: id)}
 
       true ->
@@ -84,7 +119,15 @@ defmodule PatchbayWeb.ConfigurationLive do
         {:noreply, socket}
 
       id ->
-        socket = assign(socket, pending_select: nil, source_draft: nil, source_dirty?: false)
+        socket =
+          assign(socket,
+            pending_select: nil,
+            source_draft: nil,
+            source_dirty?: false,
+            structured: nil,
+            structured_dirty?: false
+          )
+
         {:noreply, push_patch(socket, to: ~p"/config/#{id}")}
     end
   end
@@ -132,6 +175,121 @@ defmodule PatchbayWeb.ConfigurationLive do
       {:noreply, assign(socket, source_draft: content, source_dirty?: dirty?)}
     else
       {:noreply, socket}
+    end
+  end
+
+  def handle_event("tab", %{"tab" => tab}, socket) when tab in ["source", "structured"] do
+    socket =
+      if tab == "structured" and not socket.assigns.structured_available? do
+        socket
+      else
+        assign(socket, :editor_tab, tab)
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("edit_structured", %{"structured" => params}, socket) do
+    socket =
+      if socket.assigns.structured do
+        update_structured(socket, Structured.form_from_params(params, socket.assigns.structured))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("edit_structured", _params, socket), do: {:noreply, socket}
+
+  def handle_event("add_toolkit", _params, socket) do
+    socket =
+      if socket.assigns.structured do
+        update_structured(socket, Structured.add_toolkit(socket.assigns.structured))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_toolkit", %{"index" => index}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, index} <- parse_index(index) do
+        update_structured(socket, Structured.remove_toolkit(structured, index))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("add_operation", %{"toolkit" => index}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, index} <- parse_index(index) do
+        update_structured(socket, Structured.add_operation(structured, index))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_operation", %{"toolkit" => toolkit, "index" => index}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, toolkit} <- parse_index(toolkit),
+           {:ok, index} <- parse_index(index) do
+        update_structured(socket, Structured.remove_operation(structured, toolkit, index))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("add_result", _params, socket) do
+    socket =
+      if socket.assigns.structured do
+        update_structured(socket, Structured.add_result(socket.assigns.structured))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("remove_result", %{"index" => index}, socket) do
+    socket =
+      with structured when not is_nil(structured) <- socket.assigns.structured,
+           {:ok, index} <- parse_index(index) do
+        update_structured(socket, Structured.remove_result(structured, index))
+      else
+        _other -> socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("save_structured", params, socket) do
+    structured_params = params["structured"]
+
+    if socket.assigns.structured do
+      form = Structured.form_from_params(structured_params || %{}, socket.assigns.structured)
+      socket = update_structured(socket, form)
+
+      case Structured.lifecycle_submission_error(structured_params || %{}) do
+        :ok ->
+          {:noreply, save_structured(socket, params)}
+
+        {:error, message} ->
+          {:noreply, notify(socket, :error, "Structured save rejected: #{message}")}
+      end
+    else
+      {:noreply,
+       notify(socket, :error, "Structured save failed: the definition is not available.")}
     end
   end
 
@@ -244,49 +402,127 @@ defmodule PatchbayWeb.ConfigurationLive do
       scripts: scripts,
       now: DateTime.utc_now()
     )
-    |> assign(source_assigns(source_info, socket, selected, opts))
+    |> assign(source_assigns(source_info, socket, selected, snapshot, config_dir, opts))
   end
 
-  defp source_assigns(source_info, socket, selected, opts) do
-    if preserve_draft?(socket, selected, opts) do
-      Map.take(socket.assigns, [
-        :source,
-        :editable_source,
-        :source_hash,
-        :source_path,
-        :source_absent?,
-        :source_editable?,
-        :source_note,
-        :source_draft,
-        :source_baseline,
-        :source_dirty?
-      ])
-    else
-      %{
-        source: source_info.display,
-        editable_source: source_info.editable,
-        source_hash: source_info.hash,
-        source_path: source_info.path,
-        source_absent?: source_info.absent,
-        source_editable?: not is_nil(source_info.editable),
-        source_note: source_info.note,
-        source_draft: source_info.editable,
-        source_baseline: source_info.editable,
-        source_dirty?: false
-      }
+  defp source_assigns(source_info, socket, selected, snapshot, config_dir, opts) do
+    fresh =
+      Map.merge(
+        %{
+          source: source_info.display,
+          editable_source: source_info.editable,
+          source_hash: source_info.hash,
+          source_path: source_info.path,
+          source_absent?: source_info.absent,
+          source_editable?: not is_nil(source_info.editable),
+          source_note: source_info.note,
+          source_draft: source_info.editable,
+          source_baseline: source_info.editable,
+          source_dirty?: false,
+          editor_tab: "source",
+          structured_toolkit_names: Structured.toolkit_names(config_dir)
+        },
+        structured_assigns(source_info, snapshot, config_dir, selected)
+      )
+
+    cond do
+      Keyword.get(opts, :reset_source, false) ->
+        fresh
+
+      kind = Keyword.get(opts, :preserve_drafts) ->
+        keep_drafts(socket, fresh, kind)
+
+      preserve_draft?(socket, selected) ->
+        Map.take(socket.assigns, @draft_assigns)
+
+      true ->
+        fresh
     end
   end
 
-  defp preserve_draft?(socket, selected, opts) do
-    not Keyword.get(opts, :reset_source, false) and
-      selected == socket.assigns.selected and
-      not is_nil(socket.assigns.source_draft)
+  defp keep_drafts(socket, fresh, kind) do
+    source_draft =
+      if kind == :source and not is_nil(socket.assigns.source_draft),
+        do: socket.assigns.source_draft,
+        else: fresh.editable_source
+
+    structured =
+      if kind == :structured and not is_nil(socket.assigns.structured),
+        do: socket.assigns.structured,
+        else: fresh.structured
+
+    fresh
+    |> Map.put(:source_draft, source_draft)
+    |> Map.put(:source_dirty?, not is_nil(source_draft) and source_draft != fresh.editable_source)
+    |> Map.put(:structured, structured)
+    |> Map.put(
+      :structured_dirty?,
+      not is_nil(structured) and structured != fresh.structured_base
+    )
+    |> Map.put(:editor_tab, socket.assigns.editor_tab)
+  end
+
+  defp structured_assigns(source_info, snapshot, config_dir, selected) do
+    cond do
+      is_nil(snapshot) ->
+        unavailable_structured("Structured editing is available after the definition validates.")
+
+      is_nil(selected) ->
+        unavailable_structured("No definition is selected.")
+
+      is_nil(source_info.raw) and is_nil(source_info.editable) ->
+        unavailable_structured("The source is not available for editing.")
+
+      true ->
+        source = source_info.raw || source_info.editable
+
+        case Structured.load(source, config_dir, selected) do
+          {:ok, %{document: document, form: form}} ->
+            %{
+              structured: form,
+              structured_base: form,
+              structured_document: document,
+              structured_available?: true,
+              structured_dirty?: false,
+              structured_note: structured_note(source_info)
+            }
+
+          {:error, message} ->
+            unavailable_structured(message)
+        end
+    end
+  end
+
+  defp structured_note(source_info) do
+    base = "Structured saves keep comments and unrecognized keys; edited fields are normalized."
+
+    if is_nil(source_info.editable) do
+      base <> " Secret values are preserved and not shown here."
+    else
+      base
+    end
+  end
+
+  defp unavailable_structured(note) do
+    %{
+      structured: nil,
+      structured_base: nil,
+      structured_document: nil,
+      structured_available?: false,
+      structured_dirty?: false,
+      structured_note: note
+    }
+  end
+
+  defp preserve_draft?(socket, selected) do
+    selected == socket.assigns.selected and dirty?(socket)
   end
 
   defp discard_draft?(socket, requested_id) do
-    socket.assigns.source_dirty? and is_binary(requested_id) and
-      requested_id != socket.assigns.selected
+    dirty?(socket) and is_binary(requested_id) and requested_id != socket.assigns.selected
   end
+
+  defp dirty?(socket), do: socket.assigns.source_dirty? or socket.assigns.structured_dirty?
 
   defp select_id(definitions, failures, nil) do
     first_id(definitions) || first_id(failures)
@@ -309,7 +545,7 @@ defmodule PatchbayWeb.ConfigurationLive do
   end
 
   defp empty_source_info do
-    %{display: "", editable: nil, hash: nil, path: nil, absent: false, note: nil}
+    %{display: "", editable: nil, raw: nil, hash: nil, path: nil, absent: false, note: nil}
   end
 
   defp failure_data(config_dir, id, failure) when is_binary(config_dir) and is_binary(id) do
@@ -333,6 +569,7 @@ defmodule PatchbayWeb.ConfigurationLive do
           %{
             display: "agent.toml does not exist yet.",
             editable: "",
+            raw: nil,
             hash: nil,
             path: path,
             absent: true,
@@ -352,6 +589,7 @@ defmodule PatchbayWeb.ConfigurationLive do
     %{
       display: "No agent.toml path was recorded.",
       editable: nil,
+      raw: nil,
       hash: nil,
       path: nil,
       absent: false,
@@ -373,11 +611,12 @@ defmodule PatchbayWeb.ConfigurationLive do
     redacted = redact_source(raw)
 
     if redacted == raw do
-      %{display: raw, editable: raw, hash: hash, path: path, absent: false, note: nil}
+      %{display: raw, editable: raw, raw: raw, hash: hash, path: path, absent: false, note: nil}
     else
       %{
         display: redacted,
         editable: nil,
+        raw: raw,
         hash: hash,
         path: path,
         absent: false,
@@ -392,6 +631,7 @@ defmodule PatchbayWeb.ConfigurationLive do
     %{
       display: "#{label}: #{source_error(reason)}",
       editable: nil,
+      raw: nil,
       hash: nil,
       path: path,
       absent: false,
@@ -505,6 +745,13 @@ defmodule PatchbayWeb.ConfigurationLive do
     socket = load(socket, id)
 
     cond do
+      socket.assigns.structured_dirty? ->
+        notify(
+          socket,
+          :error,
+          "Save blocked: the structured editor has unsaved changes. Save or discard them first."
+        )
+
       is_nil(id) ->
         notify(socket, :error, "Save failed: no definition is selected.")
 
@@ -532,18 +779,83 @@ defmodule PatchbayWeb.ConfigurationLive do
     end
   end
 
-  defp write_source(socket, id, content, expected_hash) do
+  defp save_structured(socket, params) do
+    id = socket.assigns.selected
+    structured = socket.assigns.structured
+    expected_hash = params["expected_hash"] || socket.assigns.source_hash
+
+    cond do
+      socket.assigns.source_dirty? ->
+        notify(
+          socket,
+          :error,
+          "Save blocked: the source editor has unsaved changes. Save or discard them first."
+        )
+
+      is_nil(id) ->
+        notify(socket, :error, "Structured save failed: no definition is selected.")
+
+      is_nil(structured) ->
+        notify(socket, :error, "Structured save failed: the definition is not available.")
+
+      is_nil(socket.assigns.structured_document) ->
+        notify(socket, :error, "Structured save failed: the source is not available for editing.")
+
+      is_nil(socket.assigns.config_dir) ->
+        notify(
+          socket,
+          :error,
+          "Structured save failed: the configuration directory is unavailable."
+        )
+
+      true ->
+        case Structured.build(
+               socket.assigns.structured_document,
+               structured,
+               id,
+               socket.assigns.config_dir
+             ) do
+          {:ok, content} ->
+            write_source(socket, id, content, expected_hash, :structured)
+
+          {:error, message} ->
+            notify(socket, :error, "Structured save rejected: #{message}")
+        end
+    end
+  end
+
+  defp update_structured(socket, nil), do: socket
+
+  defp update_structured(socket, form) do
+    assign(socket,
+      structured: form,
+      structured_dirty?: form != socket.assigns.structured_base
+    )
+  end
+
+  defp parse_index(index) when is_integer(index) and index >= 0, do: {:ok, index}
+
+  defp parse_index(index) when is_binary(index) do
+    case Integer.parse(index) do
+      {value, ""} when value >= 0 -> {:ok, value}
+      _other -> :error
+    end
+  end
+
+  defp parse_index(_index), do: :error
+
+  defp write_source(socket, id, content, expected_hash, kind \\ :source) do
     config_dir = socket.assigns.config_dir
     expected_hash = normalize_expected_hash(socket, expected_hash)
 
     with {:ok, path} <- Source.path(config_dir, id),
          :ok <- authoritative_path(socket.assigns.snapshot, path),
          {:ok, _written} <- Source.write(config_dir, id, content, expected_hash) do
-      apply_write(socket, id)
+      apply_write(socket, id, kind)
     else
       {:error, :stale} ->
         socket
-        |> load(id, reset_source: true)
+        |> load(id, preserve_drafts: kind)
         |> notify(
           :error,
           "Save conflict: the source changed on disk after it was loaded. Review it and save again."
@@ -592,19 +904,21 @@ defmodule PatchbayWeb.ConfigurationLive do
 
   defp authoritative_path(_snapshot, _expected), do: {:error, :not_authoritative}
 
-  defp apply_write(socket, id) do
+  defp apply_write(socket, id, kind) do
+    tab = socket.assigns[:editor_tab] || "source"
+
     socket =
       case safe(fn -> DefinitionRegistry.reload_agent(id) end) do
         {:ok, _snapshot} ->
-          notify(socket, :info, "Source saved. Definition reloaded.")
+          notify(socket, :info, saved_message(kind))
 
         {:error, %Error{} = error} ->
           message =
             if socket.assigns.snapshot do
-              "Source saved, but the definition is invalid. The last good definition remains active: " <>
+              "#{saved_label(kind)}, but the definition is invalid. The last good definition remains active: " <>
                 Error.message(error)
             else
-              "Source saved, but the definition is invalid: " <> Error.message(error)
+              "#{saved_label(kind)}, but the definition is invalid: " <> Error.message(error)
             end
 
           notify(socket, :error, message)
@@ -613,16 +927,26 @@ defmodule PatchbayWeb.ConfigurationLive do
           notify(
             socket,
             :error,
-            "Source saved, but the definition directory was not found during reload."
+            "#{saved_label(kind)}, but the definition directory was not found during reload."
           )
 
         {:error, reason} ->
-          notify(socket, :error, "Source saved, but reload failed: #{error_detail(reason)}")
+          notify(
+            socket,
+            :error,
+            "#{saved_label(kind)}, but reload failed: #{error_detail(reason)}"
+          )
       end
 
     Phoenix.PubSub.broadcast_from(@pubsub, self(), "config", {:config, :reloaded})
-    load(socket, id, reset_source: true)
+    socket |> load(id, reset_source: true) |> assign(:editor_tab, tab)
   end
+
+  defp saved_message(:structured), do: "Structured configuration saved. Definition reloaded."
+  defp saved_message(_kind), do: "Source saved. Definition reloaded."
+
+  defp saved_label(:structured), do: "Structured configuration saved"
+  defp saved_label(_kind), do: "Source saved"
 
   defp save_params(%{"source" => %{"content" => content} = source} = params)
        when is_binary(content) do
@@ -853,7 +1177,31 @@ defmodule PatchbayWeb.ConfigurationLive do
               </div>
             </div>
 
-            <section class="config-section">
+            <div class="editor-tabs" role="tablist" aria-label="Definition editor">
+              <button
+                class={"filter #{if @editor_tab == "source", do: "is-active"}"}
+                type="button"
+                role="tab"
+                aria-selected={@editor_tab == "source"}
+                phx-click="tab"
+                phx-value-tab="source"
+              >
+                SOURCE
+              </button>
+              <button
+                class={"filter #{if @editor_tab == "structured", do: "is-active"}"}
+                type="button"
+                role="tab"
+                aria-selected={@editor_tab == "structured"}
+                disabled={!@structured_available?}
+                phx-click="tab"
+                phx-value-tab="structured"
+              >
+                STRUCTURED
+              </button>
+            </div>
+
+            <section :if={@editor_tab == "source"} class="config-section">
               <header class="panel-head">
                 <h3>SOURCE <span>{@source_path || "agent.toml"}</span></h3>
                 <span :if={@source_hash} class="panel-meta">SHA {short_hash(@source_hash)}</span>
@@ -885,6 +1233,615 @@ defmodule PatchbayWeb.ConfigurationLive do
               <pre :if={!@source_editable?} class="code-block">{@source}</pre>
 
               <p :if={@source_note} class="source-note source-note-block">{@source_note}</p>
+            </section>
+
+            <section :if={@editor_tab == "structured"} class="config-section">
+              <header class="panel-head">
+                <h3>STRUCTURED <span>{@source_path || "agent.toml"}</span></h3>
+                <span :if={@source_hash} class="panel-meta">SHA {short_hash(@source_hash)}</span>
+              </header>
+
+              <div :if={!@structured_available?} class="empty-state inline">
+                <p>STRUCTURED EDITING UNAVAILABLE</p>
+                <p class="muted">{@structured_note}</p>
+              </div>
+
+              <form
+                :if={@structured}
+                id="structured-form"
+                class="structured-form"
+                phx-submit="save_structured"
+                phx-change="edit_structured"
+              >
+                <input type="hidden" name="expected_hash" value={@source_hash || "absent"} />
+
+                <fieldset class="struct-group">
+                  <legend>IDENTITY</legend>
+                  <div class="struct-field">
+                    <label for="structured-id">AGENT ID</label>
+                    <input id="structured-id" type="text" value={@structured["id"]} readonly />
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>MODEL</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-model-name">MODEL NAME</label>
+                      <input
+                        id="structured-model-name"
+                        name="structured[model][name]"
+                        type="text"
+                        value={@structured["model"]["name"]}
+                        placeholder="default"
+                        autocomplete="off"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      />
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-model-provider">PROVIDER</label>
+                      <input
+                        id="structured-model-provider"
+                        name="structured[model][provider]"
+                        type="text"
+                        value={@structured["model"]["provider"]}
+                        placeholder="default"
+                        autocomplete="off"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      />
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-model-reasoning">REASONING</label>
+                      <input
+                        id="structured-model-reasoning"
+                        name="structured[model][reasoning]"
+                        type="text"
+                        value={@structured["model"]["reasoning"]}
+                        autocomplete="off"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      />
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>LIFECYCLE</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-lifecycle-kind">KIND</label>
+                      <select
+                        id="structured-lifecycle-kind"
+                        name="structured[lifecycle][kind]"
+                      >
+                        <option
+                          value="one-shot"
+                          selected={@structured["lifecycle"]["kind"] == "one-shot"}
+                        >
+                          ONE-SHOT
+                        </option>
+                        <option
+                          value="scheduled"
+                          selected={@structured["lifecycle"]["kind"] == "scheduled"}
+                        >
+                          SCHEDULED
+                        </option>
+                        <option
+                          value="perpetual"
+                          selected={@structured["lifecycle"]["kind"] == "perpetual"}
+                        >
+                          PERPETUAL
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      :if={@structured["lifecycle"]["kind"] == "scheduled"}
+                      class="struct-field"
+                    >
+                      <label for="structured-lifecycle-schedule">SCHEDULE (CRON, UTC)</label>
+                      <input
+                        id="structured-lifecycle-schedule"
+                        name="structured[lifecycle][schedule]"
+                        type="text"
+                        value={@structured["lifecycle"]["schedule"]}
+                        placeholder="0 7 * * *"
+                        autocomplete="off"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      />
+                    </div>
+                    <div
+                      :if={@structured["lifecycle"]["kind"] == "scheduled"}
+                      class="struct-field"
+                    >
+                      <label for="structured-lifecycle-overlap">OVERLAP</label>
+                      <select id="structured-lifecycle-overlap" name="structured[lifecycle][overlap]">
+                        <option value="" selected={@structured["lifecycle"]["overlap"] == ""}>
+                          DEFAULT
+                        </option>
+                        <option
+                          value="forbid"
+                          selected={@structured["lifecycle"]["overlap"] == "forbid"}
+                        >
+                          FORBID
+                        </option>
+                      </select>
+                    </div>
+                    <div
+                      :if={@structured["lifecycle"]["kind"] == "scheduled"}
+                      class="struct-field"
+                    >
+                      <label for="structured-lifecycle-catch-up">CATCH-UP</label>
+                      <select
+                        id="structured-lifecycle-catch-up"
+                        name="structured[lifecycle][catch_up]"
+                      >
+                        <option value="" selected={@structured["lifecycle"]["catch_up"] == ""}>
+                          DEFAULT
+                        </option>
+                        <option
+                          value="none"
+                          selected={@structured["lifecycle"]["catch_up"] == "none"}
+                        >
+                          NONE
+                        </option>
+                        <option
+                          value="once"
+                          selected={@structured["lifecycle"]["catch_up"] == "once"}
+                        >
+                          ONCE
+                        </option>
+                        <option
+                          value="all"
+                          selected={@structured["lifecycle"]["catch_up"] == "all"}
+                        >
+                          ALL
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>CONTEXT</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-context-between-runs">BETWEEN RUNS</label>
+                      <select
+                        id="structured-context-between-runs"
+                        name="structured[context][between_runs]"
+                      >
+                        <option
+                          value=""
+                          selected={@structured["context"]["between_runs"] == ""}
+                        >
+                          DEFAULT
+                        </option>
+                        <option
+                          value="keep"
+                          selected={@structured["context"]["between_runs"] == "keep"}
+                        >
+                          KEEP
+                        </option>
+                        <option
+                          value="reset"
+                          selected={@structured["context"]["between_runs"] == "reset"}
+                        >
+                          RESET
+                        </option>
+                        <option
+                          :if={@structured["context"]["between_runs"] not in ["", "keep", "reset"]}
+                          value={@structured["context"]["between_runs"]}
+                          selected
+                        >
+                          {@structured["context"]["between_runs"]}
+                        </option>
+                      </select>
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-context-prior-runs">PRIOR RUNS</label>
+                      <select
+                        id="structured-context-prior-runs"
+                        name="structured[context][prior_runs]"
+                      >
+                        <option value="" selected={@structured["context"]["prior_runs"] == ""}>
+                          DEFAULT
+                        </option>
+                        <option
+                          value="keep"
+                          selected={@structured["context"]["prior_runs"] == "keep"}
+                        >
+                          KEEP
+                        </option>
+                        <option
+                          value="reset"
+                          selected={@structured["context"]["prior_runs"] == "reset"}
+                        >
+                          RESET
+                        </option>
+                        <option
+                          :if={@structured["context"]["prior_runs"] not in ["", "keep", "reset"]}
+                          value={@structured["context"]["prior_runs"]}
+                          selected
+                        >
+                          {@structured["context"]["prior_runs"]}
+                        </option>
+                      </select>
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-context-restore-interrupted">RESTORE INTERRUPTED</label>
+                      <select
+                        id="structured-context-restore-interrupted"
+                        name="structured[context][restore_interrupted]"
+                      >
+                        <option
+                          value=""
+                          selected={@structured["context"]["restore_interrupted"] == ""}
+                        >
+                          DEFAULT
+                        </option>
+                        <option
+                          value="keep"
+                          selected={@structured["context"]["restore_interrupted"] == "keep"}
+                        >
+                          KEEP
+                        </option>
+                        <option
+                          value="reset"
+                          selected={@structured["context"]["restore_interrupted"] == "reset"}
+                        >
+                          RESET
+                        </option>
+                        <option
+                          :if={
+                            @structured["context"]["restore_interrupted"] not in ["", "keep", "reset"]
+                          }
+                          value={@structured["context"]["restore_interrupted"]}
+                          selected
+                        >
+                          {@structured["context"]["restore_interrupted"]}
+                        </option>
+                      </select>
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-context-threshold">COMPACTION THRESHOLD</label>
+                      <input
+                        id="structured-context-threshold"
+                        name="structured[context][threshold]"
+                        type="number"
+                        min="0"
+                        value={@structured["context"]["threshold"]}
+                        phx-debounce="200"
+                      />
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-context-target">COMPACTION TARGET</label>
+                      <input
+                        id="structured-context-target"
+                        name="structured[context][target]"
+                        type="number"
+                        min="0"
+                        value={@structured["context"]["target"]}
+                        phx-debounce="200"
+                      />
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>BUDGETS</legend>
+                  <div class="struct-grid">
+                    <div class="struct-field">
+                      <label for="structured-budget-run-seconds">RUN SECONDS</label>
+                      <input
+                        id="structured-budget-run-seconds"
+                        name="structured[budgets][run_seconds]"
+                        type="number"
+                        min="0"
+                        value={@structured["budgets"]["run_seconds"]}
+                        phx-debounce="200"
+                      />
+                    </div>
+                    <div class="struct-field">
+                      <label for="structured-budget-tokens">TOKENS</label>
+                      <input
+                        id="structured-budget-tokens"
+                        name="structured[budgets][tokens]"
+                        type="number"
+                        min="0"
+                        value={@structured["budgets"]["tokens"]}
+                        phx-debounce="200"
+                      />
+                    </div>
+                  </div>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>TOOLKITS</legend>
+                  <div class="struct-toolbar">
+                    <span>DECLARED <b>{length(@structured["toolkits"])}</b></span>
+                    <button class="filter" type="button" phx-click="add_toolkit">
+                      ADD TOOLKIT
+                    </button>
+                  </div>
+
+                  <datalist id="structured-toolkit-names">
+                    <option :for={name <- @structured_toolkit_names} value={name} />
+                  </datalist>
+
+                  <article
+                    :for={{toolkit, toolkit_index} <- Enum.with_index(@structured["toolkits"])}
+                    class="struct-item"
+                  >
+                    <header class="struct-item-head">
+                      <span>TOOLKIT {toolkit_index + 1}</span>
+                      <button
+                        class="filter"
+                        type="button"
+                        phx-click="remove_toolkit"
+                        phx-value-index={toolkit_index}
+                      >
+                        REMOVE
+                      </button>
+                    </header>
+
+                    <div class="struct-grid">
+                      <div class="struct-field">
+                        <label for={"structured-toolkit-#{toolkit_index}"}>TOOLKIT NAME</label>
+                        <input
+                          id={"structured-toolkit-#{toolkit_index}"}
+                          name={"structured[toolkits][#{toolkit_index}][toolkit]"}
+                          type="text"
+                          value={toolkit["toolkit"]}
+                          list="structured-toolkit-names"
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                      <div class="struct-field">
+                        <label for={"structured-toolkit-description-#{toolkit_index}"}>
+                          DESCRIPTION
+                        </label>
+                        <input
+                          id={"structured-toolkit-description-#{toolkit_index}"}
+                          name={"structured[toolkits][#{toolkit_index}][description]"}
+                          type="text"
+                          value={toolkit["description"]}
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                      <div
+                        :if={Structured.filesystem_toolkit?(toolkit["toolkit"], @config_dir)}
+                        class="struct-field"
+                      >
+                        <label for={"structured-toolkit-root-#{toolkit_index}"}>
+                          FILESYSTEM ROOT
+                        </label>
+                        <input
+                          id={"structured-toolkit-root-#{toolkit_index}"}
+                          name={"structured[toolkits][#{toolkit_index}][root]"}
+                          type="text"
+                          value={toolkit["root"]}
+                          placeholder="work"
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                      <div
+                        :if={Structured.personal_memory_toolkit?(toolkit["toolkit"], @config_dir)}
+                        class="struct-field"
+                      >
+                        <label for={"structured-toolkit-namespace-#{toolkit_index}"}>
+                          MEMORY NAMESPACE
+                        </label>
+                        <input
+                          id={"structured-toolkit-namespace-#{toolkit_index}"}
+                          name={"structured[toolkits][#{toolkit_index}][namespace]"}
+                          type="text"
+                          value={toolkit["namespace"]}
+                          placeholder="default"
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="struct-subhead">
+                      <span>OPERATIONS <b>{length(toolkit["operations"])}</b></span>
+                      <button
+                        class="filter"
+                        type="button"
+                        phx-click="add_operation"
+                        phx-value-toolkit={toolkit_index}
+                      >
+                        ADD OPERATION
+                      </button>
+                    </div>
+
+                    <article
+                      :for={
+                        {operation, operation_index} <- Enum.with_index(toolkit["operations"])
+                      }
+                      class="struct-item nested"
+                    >
+                      <header class="struct-item-head">
+                        <span>OPERATION {operation_index + 1}</span>
+                        <button
+                          class="filter"
+                          type="button"
+                          phx-click="remove_operation"
+                          phx-value-toolkit={toolkit_index}
+                          phx-value-index={operation_index}
+                        >
+                          REMOVE
+                        </button>
+                      </header>
+
+                      <div class="struct-grid">
+                        <div class="struct-field">
+                          <label>NAME</label>
+                          <input
+                            name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][name]"}
+                            type="text"
+                            value={operation["name"]}
+                            autocomplete="off"
+                            spellcheck="false"
+                            phx-debounce="200"
+                          />
+                        </div>
+                        <div class="struct-field">
+                          <label>EXECUTABLE</label>
+                          <input
+                            name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][executable]"}
+                            type="text"
+                            value={operation["executable"]}
+                            placeholder="/bin/echo"
+                            autocomplete="off"
+                            spellcheck="false"
+                            phx-debounce="200"
+                          />
+                        </div>
+                        <div class="struct-field">
+                          <label>DESCRIPTION</label>
+                          <input
+                            name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][description]"}
+                            type="text"
+                            value={operation["description"]}
+                            autocomplete="off"
+                            spellcheck="false"
+                            phx-debounce="200"
+                          />
+                        </div>
+                      </div>
+
+                      <div class="struct-field">
+                        <label>ARGV (ONE PER LINE)</label>
+                        <textarea
+                          name={"structured[toolkits][#{toolkit_index}][operations][#{operation_index}][argv]"}
+                          rows="3"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        >{operation["argv"]}</textarea>
+                      </div>
+                    </article>
+                  </article>
+                </fieldset>
+
+                <fieldset class="struct-group">
+                  <legend>RESULTS</legend>
+                  <div class="struct-toolbar">
+                    <span>DECLARED <b>{length(@structured["results"])}</b></span>
+                    <button class="filter" type="button" phx-click="add_result">ADD RESULT</button>
+                  </div>
+
+                  <article
+                    :for={{result, result_index} <- Enum.with_index(@structured["results"])}
+                    class="struct-item"
+                  >
+                    <header class="struct-item-head">
+                      <span>RESULT {result_index + 1}</span>
+                      <button
+                        class="filter"
+                        type="button"
+                        phx-click="remove_result"
+                        phx-value-index={result_index}
+                      >
+                        REMOVE
+                      </button>
+                    </header>
+
+                    <div class="struct-grid">
+                      <div class="struct-field">
+                        <label>ID</label>
+                        <input
+                          name={"structured[results][#{result_index}][id]"}
+                          type="text"
+                          value={result["id"]}
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                      <div class="struct-field">
+                        <label>LABEL</label>
+                        <input
+                          name={"structured[results][#{result_index}][label]"}
+                          type="text"
+                          value={result["label"]}
+                          autocomplete="off"
+                          spellcheck="false"
+                          phx-debounce="200"
+                        />
+                      </div>
+                      <div class="struct-field">
+                        <label>FORM</label>
+                        <select name={"structured[results][#{result_index}][form]"}>
+                          <option value="prose" selected={result["form"] == "prose"}>PROSE</option>
+                          <option value="number" selected={result["form"] == "number"}>
+                            NUMBER
+                          </option>
+                          <option value="url" selected={result["form"] == "url"}>URL</option>
+                          <option value="file" selected={result["form"] == "file"}>FILE</option>
+                        </select>
+                      </div>
+                      <div class="struct-field">
+                        <label>REQUIRED</label>
+                        <select
+                          name={"structured[results][#{result_index}][required]"}
+                          disabled={result["required_by"] != ""}
+                        >
+                          <option value="true" selected={result["required"] != "false"}>
+                            REQUIRED
+                          </option>
+                          <option value="false" selected={result["required"] == "false"}>
+                            OPTIONAL
+                          </option>
+                        </select>
+                      </div>
+                      <div class="struct-field">
+                        <label>REQUIRED-BY</label>
+                        <select name={"structured[results][#{result_index}][required_by]"}>
+                          <option value="" selected={result["required_by"] == ""}>NONE</option>
+                          <option
+                            :for={{other, other_index} <- Enum.with_index(@structured["results"])}
+                            :if={other_index != result_index and other["id"] != ""}
+                            value={other["id"]}
+                            selected={result["required_by"] == other["id"]}
+                          >
+                            {other["id"]}
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div :if={result["form"] == "file"} class="struct-field">
+                      <label>EXTENSIONS (ONE PER LINE)</label>
+                      <textarea
+                        name={"structured[results][#{result_index}][extensions]"}
+                        rows="2"
+                        spellcheck="false"
+                        phx-debounce="200"
+                      >{result["extensions"]}</textarea>
+                    </div>
+                  </article>
+                </fieldset>
+
+                <div class="source-actions">
+                  <span :if={@structured_dirty?} class="source-dirty">UNSAVED CHANGES</span>
+                  <button class="filter" type="submit">SAVE STRUCTURED</button>
+                </div>
+
+                <p :if={@structured_note} class="source-note source-note-block">
+                  {@structured_note}
+                </p>
+              </form>
             </section>
 
             <section class="config-section">

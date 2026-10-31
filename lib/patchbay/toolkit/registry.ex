@@ -14,6 +14,8 @@ defmodule Patchbay.Toolkit.Registry do
 
   @builtins %{
     "filesystem" => Patchbay.Toolkit.Native.Filesystem,
+    "personal-memory" => Patchbay.Toolkit.Native.PersonalMemory,
+    "secret-env" => Patchbay.Toolkit.Native.SecretEnv,
     "terminal" => Patchbay.Toolkit.Native.Terminal
   }
 

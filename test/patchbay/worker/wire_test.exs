@@ -109,7 +109,8 @@ defmodule Patchbay.Worker.WireTest do
          worker_id: "worker",
          token: "0123456789abcdef",
          manager_host: "127.0.0.1",
-         manager_port: 4000
+         manager_port: 4000,
+         secrets: %{"GH_TOKEN" => "value"}
        }},
       {:start_worker_result,
        %{request_id: "request", status: :started, worker_id: "worker", os_pid: 12}},

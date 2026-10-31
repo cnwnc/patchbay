@@ -849,11 +849,16 @@ defmodule PatchbayWeb.ConsoleLive do
             </div>
 
             <ol id="stream-list" class="stream-list" aria-live="polite" phx-hook="PatchbayStream">
-              <li :for={item <- @stream} class={row_class(item)}>
+              <li :for={item <- @stream} :key={item.id} class={row_class(item)}>
                 <time class="row-time">{item.time}</time>
                 <span class="row-type">{row_type(item)}</span>
                 <div class="row-body">
-                  <details :if={item.kind == :event} class="event-details">
+                  <details
+                    :if={item.kind == :event}
+                    id={"event-detail-#{@selected_agent.agent_id}-#{item.id}"}
+                    class="event-details"
+                    phx-hook="PatchbayDetails"
+                  >
                     <summary class="event-summary">
                       <span class="event-label">{item.label}</span>
                       <span :if={item.preview != ""} class="event-preview">{item.preview}</span>

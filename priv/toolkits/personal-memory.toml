@@ -1,0 +1,4 @@
+name = "personal-memory"
+description = "Built-in persistent memory scoped to one agent and namespace."
+native = "personal-memory"
+tools = ["remember", "append_memory", "read_memory", "list_memories", "recall", "delete_memory"]

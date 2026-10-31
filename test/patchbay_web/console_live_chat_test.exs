@@ -301,9 +301,27 @@ defmodule PatchbayWeb.ConsoleLiveChatTest do
     assert html =~ "PROVIDER ERROR"
     assert html =~ "event-details"
     assert html =~ "event-detail"
+    assert html =~ ~r/id="event-detail-researcher-provider_error-\d+"/
+    assert html =~ ~s(phx-hook="PatchbayDetails")
     assert html =~ message
     assert html =~ "KIND transport"
     assert html =~ "STATUS 503"
+  end
+
+  test "keeps event detail ids stable across runtime refreshes", %{conn: conn} do
+    _runtime =
+      start_fake(summary("researcher", activity: :waiting),
+        events: [event(:run_started, %{"kind" => "cold"})]
+      )
+
+    {:ok, view, html} = live(conn, "/")
+
+    assert [_, detail_id] =
+             Regex.run(~r/id="(event-detail-researcher-run_started-\d+)"/, html)
+
+    send(view.pid, :tick)
+
+    assert eventually(fn -> render(view) =~ ~s(id="#{detail_id}") end)
   end
 
   test "flash dismisses on click and when its timer expires", %{conn: conn} do

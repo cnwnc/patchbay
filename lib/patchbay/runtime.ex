@@ -117,6 +117,7 @@ defmodule Patchbay.Runtime do
   require Logger
 
   alias Patchbay.AgentRunner
+  alias Patchbay.ArtifactStore
   alias Patchbay.Config
   alias Patchbay.ContextCompaction
   alias Patchbay.ContextStore
@@ -124,6 +125,8 @@ defmodule Patchbay.Runtime do
   alias Patchbay.Lifecycle
   alias Patchbay.Provider.{Message, Request, Response, ToolCall}
   alias Patchbay.Run
+  alias Patchbay.Secrets.Env, as: SecretEnv
+  alias Patchbay.Secrets.Redact
   alias Patchbay.ToolHistory
   alias Patchbay.ToolHistory.Writer
   alias Patchbay.Toolkit.{Hooks, Manifest, Registry, Variables}
@@ -134,12 +137,17 @@ defmodule Patchbay.Runtime do
   @default_await_timeout 20_000
   @default_execute_timeout 30_000
   @default_hook_timeout 30_000
+  @artifact_read_timeout 10_000
+  @artifact_chunk_bytes 512 * 1024
+  # Wall-clock cap for copying one run's file results out through the worker;
+  # bounds the publication task even if every chunk takes its full timeout.
+  @artifact_publication_timeout 120_000
   @history_result_bytes 16_384
   @history_arguments_bytes 16_384
 
   @type agent_id :: term()
   @type status :: :stopped | :starting | :running | :stopping | :failed
-  @type activity :: :idle | :thinking | :executing_tool | :waiting
+  @type activity :: :idle | :thinking | :executing_tool | :waiting | :publishing
 
   @type agent_summary :: %{
           agent_id: term(),
@@ -368,6 +376,31 @@ defmodule Patchbay.Runtime do
   def transcript_path(server, agent_id),
     do: GenServer.call(server, {:transcript_path, agent_id})
 
+  @doc """
+  Lists an agent's published artifacts, newest first.
+
+  Artifacts are copied out of the agent's workspace when a run submits its
+  `file` results, before the workspace can be torn down. They are
+  manager-owned under `<state_dir>/artifacts/<agent-id>/`.
+  """
+  @spec list_artifacts(GenServer.server(), agent_id()) ::
+          {:ok, [ArtifactStore.artifact()]} | {:error, term()}
+  def list_artifacts(server, agent_id),
+    do: GenServer.call(server, {:list_artifacts, agent_id})
+
+  @doc """
+  Resolves one published artifact for serving.
+
+  Returns the artifact's size, content type, disposition, and absolute
+  manager-owned path. Access control is the caller's job; the UI route behind
+  `PATCHBAY_UI_TOKEN` is the intended caller.
+  """
+  @spec artifact(GenServer.server(), agent_id(), binary()) ::
+          {:ok, ArtifactStore.artifact() | map()} | {:error, term()}
+  def artifact(server, agent_id, name), do: GenServer.call(server, {:artifact, agent_id, name})
+
+  @max_artifact_name_bytes 255
+
   @impl true
   def init(opts) do
     config =
@@ -377,6 +410,7 @@ defmodule Patchbay.Runtime do
           :config_dir,
           :state_dir,
           :runtime_dir,
+          :secrets_dir,
           :workspace_dir,
           :result_dir,
           :env
@@ -395,14 +429,18 @@ defmodule Patchbay.Runtime do
         definitions: definitions,
         state_dir: state_dir,
         runtime_dir: config.runtime_dir,
+        secrets_dir: Keyword.get(opts, :secrets_dir) || config.secrets_dir,
         workspace_dir: Keyword.get(opts, :workspace) || config.workspace_dir,
         result_dir: config.result_dir,
         hook_timeout: Keyword.get(opts, :hook_timeout, @default_hook_timeout),
+        max_artifact_bytes:
+          Keyword.get(opts, :max_artifact_bytes, ArtifactStore.default_max_artifact_bytes()),
         agents: %{},
         event_sequences: %{},
         tool_sequences: %{},
         compactions: %{},
         context_ready: MapSet.new(),
+        secret_values: %{},
         subscribers: %{}
       }
 
@@ -447,12 +485,34 @@ defmodule Patchbay.Runtime do
     end
   end
 
-  def handle_call({:stop_agent, agent_id, opts}, _from, state) do
+  def handle_call({:stop_agent, agent_id, opts}, from, state) do
     state = refresh(state)
 
-    case do_stop(state, agent_id, opts) do
-      {:ok, summary, state} -> {:reply, {:ok, summary}, state}
-      {:error, reason, state} -> {:reply, {:error, reason}, state}
+    case Map.fetch(state.agents, agent_id) do
+      {:ok, agent} ->
+        if publishing?(agent) do
+          # The worker must outlive the artifact copy; acknowledge the stop
+          # when publication completes instead of killing the source. A
+          # second attempt takes the spot, and the first caller is told the
+          # stop is already underway.
+          reason = Keyword.get(opts, :reason, :operator_stop)
+
+          case agent.stop_waiter do
+            {previous, _reason} -> GenServer.reply(previous, {:error, :stopping})
+            nil -> :ok
+          end
+
+          agent = %{agent | status: :stopping, stop_waiter: {from, reason}}
+          {:noreply, put_agent(state, agent)}
+        else
+          case do_stop(state, agent_id, opts) do
+            {:ok, summary, state} -> {:reply, {:ok, summary}, state}
+            {:error, reason, state} -> {:reply, {:error, reason}, state}
+          end
+        end
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -567,6 +627,7 @@ defmodule Patchbay.Runtime do
 
   def handle_call({:runner_tool_message, agent_id, call, output}, _from, state) do
     with {:ok, agent} <- runner_agent(state, agent_id) do
+      output = Redact.redact(output, agent_secret_values(state, agent_id))
       {agent, message} = append_tool_message(agent, call, output)
       agent = %{agent | activity: :thinking}
       state = put_agent(state, agent)
@@ -579,6 +640,7 @@ defmodule Patchbay.Runtime do
 
   def handle_call({:runner_tool_result, agent_id, call, status, output}, _from, state) do
     with {:ok, agent} <- runner_agent(state, agent_id) do
+      output = Redact.redact(output, agent_secret_values(state, agent_id))
       {agent, message} = append_tool_message(agent, call, output)
       agent = %{agent | activity: :thinking}
       state = put_agent(state, agent)
@@ -605,6 +667,7 @@ defmodule Patchbay.Runtime do
 
   def handle_call({:runner_complete, agent_id, call, results}, _from, state) do
     with {:ok, agent} <- runner_agent(state, agent_id) do
+      results = Redact.redact(results, agent_secret_values(state, agent_id))
       {agent, message} = append_tool_message(agent, call, terminal_output("completed", results))
       state = put_agent(state, agent)
       state = record_context_message(state, agent, message)
@@ -623,7 +686,16 @@ defmodule Patchbay.Runtime do
           })
         )
 
-      {:reply, :ok, complete_run(state, agent, results)}
+      case publication_jobs(agent, results) do
+        [] ->
+          {:reply, :ok, complete_run(state, agent, results, [])}
+
+        jobs ->
+          # The copy runs outside the call so the runner cannot block on it;
+          # the terminal transition happens once, when the copy finishes.
+          run_id = agent.lifecycle && lifecycle_run(agent) && lifecycle_run(agent).id
+          {:reply, :ok, start_publication(state, agent, results, run_id, jobs)}
+      end
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -631,6 +703,7 @@ defmodule Patchbay.Runtime do
 
   def handle_call({:runner_fail, agent_id, call, reason}, _from, state) do
     with {:ok, agent} <- runner_agent(state, agent_id) do
+      reason = Redact.redact(reason, agent_secret_values(state, agent_id))
       output = terminal_output("failed", reason)
       {agent, message} = append_tool_message(agent, call, output)
       state = put_agent(state, agent)
@@ -799,6 +872,34 @@ defmodule Patchbay.Runtime do
     {:reply, reply, state}
   end
 
+  def handle_call({:list_artifacts, agent_id}, _from, state) do
+    state = refresh(state)
+
+    reply =
+      with {:ok, _agent} <- fetch_agent(state, agent_id),
+           {:ok, artifacts} <- ArtifactStore.list(state.state_dir, agent_id) do
+        {:ok, artifacts}
+      else
+        {:error, reason} -> {:error, reason}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:artifact, agent_id, name}, _from, state) do
+    reply =
+      with {:ok, _agent} <- fetch_agent(state, agent_id),
+           true <- is_binary(name) and byte_size(name) <= @max_artifact_name_bytes,
+           {:ok, artifact} <- ArtifactStore.resolve(state.state_dir, agent_id, name) do
+        {:ok, artifact}
+      else
+        false -> {:error, {:invalid_artifact_name, name}}
+        {:error, reason} -> {:error, reason}
+      end
+
+    {:reply, reply, state}
+  end
+
   @impl true
   def handle_info({:compaction_prepared, agent_id, generation, result}, state) do
     case Map.fetch(state.compactions, agent_id) do
@@ -831,22 +932,52 @@ defmodule Patchbay.Runtime do
     end
   end
 
+  def handle_info({:artifact_publication_done, agent_id, pid, outcomes}, state) do
+    case Map.fetch(state.agents, agent_id) do
+      {:ok, %{publisher: %{pid: ^pid} = publisher} = agent} ->
+        Process.demonitor(publisher.monitor, [:flush])
+        {:noreply, finish_publication(state, agent, publisher, outcomes)}
+
+      _other ->
+        # Stale completion from a publication the runtime already abandoned.
+        {:noreply, state}
+    end
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   defp handle_process_down(state, monitor, pid, reason) do
-    case runner_for_monitor(state, monitor, pid) do
-      {:ok, agent_id} ->
-        {:noreply, handle_runner_down(state, agent_id, reason)}
+    case publication_for_monitor(state, monitor, pid) do
+      {:ok, _agent_id, agent, publisher} ->
+        # The copy process died; the run still reaches a terminal state so
+        # waiters are not stranded, with the loss reported per result.
+        outcomes = failed_publication_outcomes(publisher, reason)
+        {:noreply, finish_publication(state, agent, publisher, outcomes)}
 
       :error ->
-        case Map.fetch(state.subscribers, pid) do
-          {:ok, ^monitor} ->
-            {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+        case runner_for_monitor(state, monitor, pid) do
+          {:ok, agent_id} ->
+            {:noreply, handle_runner_down(state, agent_id, reason)}
 
-          _other ->
-            {:noreply, state}
+          :error ->
+            case Map.fetch(state.subscribers, pid) do
+              {:ok, ^monitor} ->
+                {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+
+              _other ->
+                {:noreply, state}
+            end
         end
     end
+  end
+
+  defp publication_for_monitor(state, monitor, pid) do
+    Enum.find_value(state.agents, :error, fn {_agent_id, agent} ->
+      case agent.publisher do
+        %{pid: ^pid, monitor: ^monitor} = publisher -> {:ok, agent.id, agent, publisher}
+        _other -> nil
+      end
+    end)
   end
 
   @impl true
@@ -857,8 +988,28 @@ defmodule Patchbay.Runtime do
       end
     end)
 
-    Enum.each(state.agents, fn {_agent_id, agent} -> terminate_runner(agent) end)
+    Enum.each(state.agents, fn {_agent_id, agent} ->
+      terminate_runner(agent)
+      terminate_publisher(agent)
+    end)
+
     :ok
+  end
+
+  defp terminate_publisher(agent) do
+    case agent.publisher do
+      %{pid: pid, monitor: monitor} ->
+        Process.demonitor(monitor, [:flush])
+
+        if is_pid(pid) and Process.alive?(pid) do
+          Process.exit(pid, :kill)
+        end
+
+        :ok
+
+      _other ->
+        :ok
+    end
   end
 
   defp terminate_runner(agent) do
@@ -880,6 +1031,7 @@ defmodule Patchbay.Runtime do
            fetch_definition(state, agent_id, agent),
          :ok <- ensure_runner_configured(state, definition),
          {:ok, operations} <- resolved_operations(definition),
+         {:ok, secret_values} <- resolve_secret_env(state, definition),
          {:ok, worker_id} <- worker_id_for(agent_id),
          {:ok, dirs} <- ensure_agent_dirs(state, agent_id) do
       {revision, fingerprint} =
@@ -938,7 +1090,7 @@ defmodule Patchbay.Runtime do
           state = put_agent(state, agent)
           state = emit_activation(state, agent, run, attempt, recovery)
           state = record_context_run(state, agent, :started)
-          finish_start(state, agent, run, attempt, operations, opts)
+          finish_start(state, agent, run, attempt, operations, secret_values, opts)
 
         {:error, reason} ->
           {:error, reason, state}
@@ -948,15 +1100,17 @@ defmodule Patchbay.Runtime do
     end
   end
 
-  defp start_worker_reconciled(state, agent, timeout, operations) do
+  defp start_worker_reconciled(state, agent, timeout, operations, secrets) do
     client = state.worker_client
 
-    opts = [
-      timeout: timeout,
-      operations: operations,
-      workspace: agent.workspace,
-      result_dir: agent.result_dir
-    ]
+    opts =
+      [
+        timeout: timeout,
+        operations: operations,
+        workspace: agent.workspace,
+        result_dir: agent.result_dir
+      ]
+      |> maybe_put_secrets(secrets)
 
     case safe_worker_call(fn ->
            client.start_worker(state.manager, agent.worker_id, opts)
@@ -976,15 +1130,17 @@ defmodule Patchbay.Runtime do
     end
   end
 
-  defp finish_start(state, agent, run, attempt, operations, opts) do
+  defp finish_start(state, agent, run, attempt, operations, secret_values, opts) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     await_timeout = Keyword.get(opts, :await_timeout, @default_await_timeout)
     client = state.worker_client
 
-    started = start_worker_reconciled(state, agent, timeout, operations)
+    started = start_worker_reconciled(state, agent, timeout, operations, secret_values)
 
     case started do
       {:ok, _info} ->
+        state = remember_secret_values(state, agent.id, secret_values)
+
         case safe_worker_call(fn ->
                client.await_worker(state.manager, agent.worker_id, await_timeout)
              end) do
@@ -1033,6 +1189,7 @@ defmodule Patchbay.Runtime do
   end
 
   defp fail_start(state, agent, run, attempt, stage, reason) do
+    state = forget_secret_values(state, agent.id)
     reason = {stage, reason}
 
     lifecycle =
@@ -1070,6 +1227,7 @@ defmodule Patchbay.Runtime do
       cond do
         agent.status == :stopped ->
           state = stop_runner(state, agent)
+          state = forget_secret_values(state, agent_id)
           agent = Map.fetch!(state.agents, agent_id)
           {:ok, summarize(agent), state}
 
@@ -1083,6 +1241,7 @@ defmodule Patchbay.Runtime do
           case stop_worker(state, agent, timeout) do
             :ok ->
               state = stop_runner(state, agent)
+              state = forget_secret_values(state, agent_id)
               agent = Map.fetch!(state.agents, agent_id)
               attempt = active_attempt(agent)
               lifecycle = stop_lifecycle(agent.lifecycle, reason, now())
@@ -1285,6 +1444,7 @@ defmodule Patchbay.Runtime do
 
   defp append_context_message(state, %{id: agent_id} = agent, %Message{} = message, opts \\ []) do
     if runner_enabled?(state) and ContextStore.valid_agent_id?(agent_id) do
+      message = Redact.redact(message, agent_secret_values(state, agent_id))
       {run_id, attempt_id} = context_ids(agent)
       repair? = not MapSet.member?(state.context_ready, agent_id)
       sync? = Keyword.get(opts, :sync, false)
@@ -1399,6 +1559,92 @@ defmodule Patchbay.Runtime do
     else
       start_runner(state, agent)
     end
+  end
+
+  defp publishing?(%{publisher: nil}), do: false
+  defp publishing?(%{publisher: _publisher}), do: true
+
+  # Copies the run's file results in a supervised-but-detached process: the
+  # reads and writes never run inside a runtime call, and the worker is kept
+  # alive until the copy is done, because the agent-owned source disappears
+  # with it. The runtime reports completion through
+  # `{:artifact_publication_done, ...}`, preserving job order.
+  defp start_publication(state, agent, results, run_id, jobs) do
+    server = self()
+    agent_id = agent.id
+    deadline = System.monotonic_time(:millisecond) + @artifact_publication_timeout
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        outcomes = publication_outcomes(state, agent, jobs, run_id, deadline)
+        send(server, {:artifact_publication_done, agent_id, self(), outcomes})
+      end)
+
+    agent = %{
+      agent
+      | status: :stopping,
+        activity: :publishing,
+        publisher: %{pid: pid, monitor: monitor, jobs: jobs, results: results}
+    }
+
+    put_agent(state, agent)
+  end
+
+  defp finish_publication(state, agent, publisher, outcomes) do
+    case agent.stop_waiter do
+      {from, reason} ->
+        state = finish_publication_stopped(state, agent, publisher, outcomes, reason)
+        agent = Map.fetch!(state.agents, agent.id)
+        GenServer.reply(from, {:ok, summarize(agent)})
+        state
+
+      nil ->
+        agent = %{agent | publisher: nil, stop_waiter: nil, status: :running, activity: :idle}
+        complete_run(state, agent, publisher.results, outcomes)
+    end
+  end
+
+  # An operator stop requested while publication is in flight still lets the
+  # copy finish, then ends the run as cancelled. The publication events stay,
+  # but no run_completed is written: the run's terminal lifecycle is the stop.
+  defp finish_publication_stopped(state, agent, _publisher, outcomes, reason) do
+    attempt = active_attempt(agent)
+    run = lifecycle_run(agent)
+    agent = %{agent | publisher: nil, stop_waiter: nil, status: :running, activity: :idle}
+    state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
+    stop_worker_best_effort(state, agent)
+    state = forget_secret_values(state, agent.id)
+
+    lifecycle = stop_lifecycle(agent.lifecycle, reason, now())
+    run = lifecycle && Lifecycle.current_run(lifecycle)
+
+    agent = %{
+      agent
+      | lifecycle: lifecycle,
+        publisher: nil,
+        stop_waiter: nil,
+        status: :stopped,
+        activity: :idle,
+        stream_text: nil,
+        pending_user: 0,
+        worker_id: nil,
+        stopped_at: now(),
+        last_error: nil,
+        terminal_result: nil
+    }
+
+    state = put_agent(state, agent)
+    state = finalize_hooks(state, agent, run, attempt)
+
+    state =
+      emit(
+        state,
+        agent.id,
+        :agent_stopped,
+        run_attrs(run, attempt, %{reason: reason})
+      )
+
+    record_context_run(state, agent, :cancelled)
   end
 
   defp runner_agent(state, agent_id) do
@@ -1557,9 +1803,374 @@ defmodule Patchbay.Runtime do
     end
   end
 
-  defp complete_run(state, agent, results) do
+  # Publication runs outside this GenServer: a multi-chunk copy can spend
+  # minutes of bounded worker RPCs, and the central runtime must keep
+  # serving other agents' calls while it proceeds. The job list preserves
+  # the definition's declaration order, and the outcomes come back in that
+  # same order so the terminal events read in sequence.
+  defp publication_jobs(agent, results) when is_map(results) do
+    agent.definition
+    |> Map.get(:results, [])
+    |> Enum.flat_map(fn result ->
+      if Map.get(result, :form) == :file do
+        case Map.get(results, result.id) do
+          value when is_binary(value) and value != "" -> [{result, value}]
+          _other -> []
+        end
+      else
+        []
+      end
+    end)
+  end
+
+  defp publication_jobs(_agent, _results), do: []
+
+  defp publication_outcomes(state, agent, jobs, run_id, deadline) do
+    Enum.map(jobs, fn {result, value} ->
+      try do
+        case publish_artifact(state, agent, result, value, run_id, deadline) do
+          {:ok, published} ->
+            {:ok, %{result: result.id, name: published.name, size: published.size, source: value}}
+
+          {:error, reason} ->
+            {:error, %{result: result.id, reason: reason, source: value}}
+        end
+      catch
+        kind, reason -> {:error, %{result: result.id, reason: {kind, reason}, source: value}}
+      end
+    end)
+  end
+
+  defp failed_publication_outcomes(publisher, reason) do
+    Enum.map(publisher.jobs, fn {result, value} ->
+      {:error, %{result: result.id, reason: {:publication_crashed, reason}, source: value}}
+    end)
+  end
+
+  defp emit_publication_outcomes(state, agent, run, attempt, outcomes) do
+    Enum.reduce(outcomes, state, fn
+      {:ok, published}, state ->
+        emit(state, agent.id, :artifact_published, run_attrs(run, attempt, published))
+
+      {:error, failed}, state ->
+        emit(state, agent.id, :artifact_publish_failed, run_attrs(run, attempt, failed))
+    end)
+  end
+
+  # A failed capture stays visible in the terminal result instead of hiding
+  # behind a success: the run completes, but the failing result's value says
+  # so.
+  defp apply_result_warnings(results, outcomes) when is_map(results) do
+    Enum.reduce(outcomes, results, fn
+      {:error, %{result: id, reason: reason, source: source}}, acc ->
+        Map.put(
+          acc,
+          id,
+          "artifact publish failed: " <> inspect(reason) <> " (source: " <> source <> ")"
+        )
+
+      _other, acc ->
+        acc
+    end)
+  end
+
+  defp apply_result_warnings(results, _outcomes), do: results
+
+  defp publish_artifact(state, agent, result, value, run_id, deadline) do
+    with :ok <- validate_artifact_path(value),
+         {:ok, ext} <- ArtifactStore.lint_source(value, Map.get(result, :extensions, [])),
+         {:ok, source} <- artifact_source(state, agent, value),
+         {:ok, bytes} <- artifact_bytes(state, agent, source, deadline),
+         name =
+           ArtifactStore.public_name(
+             [result.id, Path.basename(Path.rootname(source.path))],
+             run_id,
+             ext
+           ),
+         {:ok, published} <- ArtifactStore.write(state.state_dir, agent.id, name, bytes) do
+      {:ok, published}
+    end
+  end
+
+  defp validate_artifact_path(value) do
+    cond do
+      String.contains?(value, <<0>>) -> {:error, :invalid_artifact_path}
+      Path.basename(value) in ["", ".", ".."] -> {:error, :invalid_artifact_path}
+      true -> :ok
+    end
+  end
+
+  # The manager never canonicalizes or stats a source path inside the
+  # agent-owned workspace: those dirs belong to the agent user, so traversing
+  # them can fail with EACCES on a cross-UID deployment. Confinement of the
+  # read itself is enforced worker-side (`Patchbay.Worker.Artifacts` resolves
+  # symlinks and refuses anything outside its roots); the manager only makes
+  # the lexical decision of which root was named.
+  defp artifact_source(state, agent, value) do
+    workspace = agent_workspace(state, agent)
+    result_dir = agent_result_dir(state, agent)
+
+    absolute =
+      if Path.type(value) == :absolute,
+        do: Path.expand(value),
+        else: Path.expand(value, workspace || ".")
+
+    cond do
+      inside_root?(workspace, absolute) ->
+        {:ok, %{root: "workspace", path: absolute, relative: relative_under(workspace, absolute)}}
+
+      inside_root?(result_dir, absolute) ->
+        {:ok, %{root: "result", path: absolute, relative: relative_under(result_dir, absolute)}}
+
+      true ->
+        {:error, {:artifact_path_outside_workspace, value}}
+    end
+  end
+
+  defp inside_root?(base, path) when is_binary(base),
+    do: String.starts_with?(path, Path.expand(base) <> "/")
+
+  defp inside_root?(_base, _path), do: false
+
+  defp relative_under(base, path),
+    do: String.replace_prefix(path, Path.expand(base) <> "/", "")
+
+  # A worker error other than these means the worker looked at the request
+  # and refused it (or failed the read), so the manager must not retry the
+  # same path on its own: the worker's confinement answer is the one that
+  # counts.
+  defp worker_availability_error?(:worker_unavailable), do: true
+  defp worker_availability_error?(:unknown_worker), do: true
+  defp worker_availability_error?(:worker_exited), do: true
+
+  defp worker_availability_error?({:worker_unavailable, _reason}), do: true
+  defp worker_availability_error?({:worker_not_available, _status}), do: true
+
+  defp worker_availability_error?(_other), do: false
+
+  defp artifact_bytes(state, agent, source, deadline) do
+    case read_via_worker(state, agent, source, deadline) do
+      {:ok, bytes} ->
+        {:ok, bytes}
+
+      {:error, reason} ->
+        if worker_availability_error?(reason),
+          do: read_directly(state, agent, source, reason),
+          else: {:error, reason}
+    end
+  end
+
+  defp read_via_worker(state, agent, source, deadline) do
+    requested = source.relative || source.path
+    arguments = %{"path" => requested, "root" => source.root}
+
+    with {:ok, worker_id} <- worker_id(agent),
+         {:ok, payload} <- read_artifact_chunk(state, worker_id, arguments, 0),
+         :ok <- check_artifact_size(state, payload["size"]),
+         {:ok, chunk} <- verify_artifact_chunk(payload, 0, payload["size"]) do
+      collect_artifact_chunks(
+        state,
+        worker_id,
+        arguments,
+        payload["size"],
+        chunk,
+        byte_size(chunk),
+        deadline
+      )
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp worker_id(%{worker_id: worker_id}) when is_binary(worker_id), do: {:ok, worker_id}
+
+  defp worker_id(%{worker_id: worker_id}) when is_binary(worker_id), do: {:ok, worker_id}
+  defp worker_id(_agent), do: {:error, :worker_unavailable}
+
+  defp check_artifact_size(state, size) do
+    if is_integer(size) and size >= 0 and size <= max_artifact_bytes(state) do
+      :ok
+    else
+      {:error, :artifact_too_large}
+    end
+  end
+
+  # Bound the loop: every chunk must carry the same size, land at the offset
+  # that was asked for, and make progress toward the end. A source that
+  # shrinks mid-copy, a worker that repeats an offset, or a chunk arriving
+  # empty while more bytes are promised each terminate with an error instead
+  # of spinning, and the deadline caps the whole transfer no matter how slow
+  # the worker is.
+  defp collect_artifact_chunks(state, worker_id, arguments, size, bytes, total, deadline) do
+    cond do
+      total > size ->
+        {:error, :artifact_read_mismatch}
+
+      total > max_artifact_bytes(state) ->
+        {:error, :artifact_too_large}
+
+      total == size ->
+        {:ok, bytes}
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :artifact_read_timeout}
+
+      true ->
+        case read_artifact_chunk(state, worker_id, arguments, total) do
+          {:ok, payload} ->
+            case verify_artifact_chunk(payload, total, size) do
+              {:ok, chunk} ->
+                collect_artifact_chunks(
+                  state,
+                  worker_id,
+                  arguments,
+                  size,
+                  bytes <> chunk,
+                  total + byte_size(chunk),
+                  deadline
+                )
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
+  defp verify_artifact_chunk(payload, offset, size) do
+    chunk = payload["chunk"]
+
+    cond do
+      payload["size"] != size ->
+        {:error, :artifact_read_mismatch}
+
+      payload["offset"] != offset ->
+        {:error, :artifact_read_mismatch}
+
+      payload["length"] != byte_size(chunk) ->
+        {:error, :artifact_read_mismatch}
+
+      payload["eof"] == true and size > offset + payload["length"] ->
+        {:error, :artifact_read_mismatch}
+
+      byte_size(chunk) == 0 and offset < size ->
+        {:error, :artifact_read_stalled}
+
+      true ->
+        {:ok, chunk}
+    end
+  end
+
+  defp read_artifact_chunk(state, worker_id, arguments, offset) do
+    arguments = Map.merge(arguments, %{"offset" => offset, "length" => @artifact_chunk_bytes})
+
+    result =
+      safe_worker_call(fn ->
+        state.worker_client.execute(
+          state.manager,
+          worker_id,
+          Patchbay.Worker.Artifacts.read_operation(),
+          arguments,
+          timeout: @artifact_read_timeout
+        )
+      end)
+
+    with {:ok, %{status: :ok} = result} <- result,
+         {:ok, decoded} <- decode_artifact_chunk(result) do
+      {:ok, decoded}
+    else
+      {:ok, %{status: _other} = result} ->
+        {:error, {:worker_read_failed, Map.get(result, :error)}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _other ->
+        {:error, :invalid_artifact_chunk}
+    end
+  end
+
+  defp decode_artifact_chunk(%{output: output}) when is_binary(output) do
+    with {:ok, %{"data" => data, "size" => size} = decoded}
+         when is_binary(data) and is_integer(size) <-
+           Patchbay.Provider.JSON.decode(output),
+         {:ok, chunk} <- decode_artifact_data(data) do
+      {:ok, Map.put(decoded, "chunk", chunk)}
+    else
+      _other -> {:error, :invalid_artifact_chunk}
+    end
+  end
+
+  defp decode_artifact_chunk(_result), do: {:error, :invalid_artifact_chunk}
+
+  defp decode_artifact_data(data) do
+    case Base.decode64(data) do
+      {:ok, chunk} -> {:ok, chunk}
+      :error -> {:error, :invalid_artifact_data}
+    end
+  end
+
+  # Only reachable when the worker itself is unavailable. A same-UID
+  # deployment can still read the file directly, so the manager applies the
+  # containment the worker would have. On a cross-UID deployment the
+  # canonicalization or the read fails and the result reports the loss.
+  defp read_directly(state, agent, source, worker_reason) do
+    base =
+      if source.root == "result",
+        do: agent_result_dir(state, agent),
+        else: agent_workspace(state, agent)
+
+    with {:ok, real_base} <- Operations.canonical(base),
+         {:ok, real} <- Operations.canonical(source.path),
+         :ok <- confine_direct(real_base, real) do
+      read_source_file(state, real, worker_reason)
+    else
+      {:error, reason} -> {:error, {:artifact_read_failed, worker_reason, reason}}
+    end
+  end
+
+  defp confine_direct(base, path) do
+    if path != base and String.starts_with?(path, base <> "/") do
+      :ok
+    else
+      {:error, {:artifact_path_outside_workspace, path}}
+    end
+  end
+
+  defp read_source_file(state, path, worker_reason) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, size: size}} ->
+        if size > max_artifact_bytes(state) do
+          {:error, :artifact_too_large}
+        else
+          case File.read(path) do
+            {:ok, bytes} -> {:ok, bytes}
+            {:error, reason} -> {:error, {:artifact_read_failed, worker_reason, reason}}
+          end
+        end
+
+      {:ok, _other_type} ->
+        {:error, {:artifact_read_failed, worker_reason, :not_a_regular_file}}
+
+      {:error, reason} ->
+        {:error, {:artifact_read_failed, worker_reason, reason}}
+    end
+  end
+
+  defp max_artifact_bytes(state) do
+    Map.get(state, :max_artifact_bytes) || ArtifactStore.default_max_artifact_bytes()
+  end
+
+  defp complete_run(state, agent, results, outcomes) do
     attempt = active_attempt(agent)
+    run = lifecycle_run(agent)
+    state = emit_publication_outcomes(state, agent, run, attempt, outcomes)
     stop_worker_best_effort(state, agent)
+    state = forget_secret_values(state, agent.id)
+    results = apply_result_warnings(results, outcomes)
 
     lifecycle =
       case agent.lifecycle do
@@ -1608,6 +2219,7 @@ defmodule Patchbay.Runtime do
   defp fail_run(state, agent, reason) do
     attempt = active_attempt(agent)
     stop_worker_best_effort(state, agent)
+    state = forget_secret_values(state, agent.id)
 
     lifecycle =
       case agent.lifecycle do
@@ -1674,7 +2286,12 @@ defmodule Patchbay.Runtime do
   defp do_await_agent(server, agent_id, deadline) do
     case get_agent(server, agent_id) do
       {:ok, agent} ->
-        if agent.status != :running or agent.activity in [:idle, :waiting] do
+        # :stopping during a publication is a transition, not a terminal
+        # state; keep polling until the terminal record is in.
+        awaited? =
+          agent.status not in [:running, :stopping] or agent.activity in [:idle, :waiting]
+
+        if awaited? do
           {:ok, agent}
         else
           if System.monotonic_time(:millisecond) >= deadline do
@@ -1736,6 +2353,7 @@ defmodule Patchbay.Runtime do
                       run,
                       attempt
                     )
+                    |> redact_result(state, agent.id)
 
                   state =
                     emit(
@@ -1932,6 +2550,9 @@ defmodule Patchbay.Runtime do
 
   defp record_tool_history(state, agent, declared, tool_name, arguments, result, event_id) do
     path = Path.join(tool_history_dir(state.state_dir), agent.id <> ".pbth")
+    secret_values = agent_secret_values(state, agent.id)
+    arguments = Redact.redact(arguments, secret_values)
+    result = Redact.redact(result, secret_values)
 
     with {:ok, sequence} <- next_tool_sequence(state, agent.id, path),
          :ok <- Transcript.ensure_dir(Path.dirname(path)),
@@ -2030,7 +2651,7 @@ defmodule Patchbay.Runtime do
         true ->
           opts = compaction_opts(state, agent, mode)
           generation = agent.context_generation
-          messages = agent.messages
+          messages = Redact.redact(agent.messages, agent_secret_values(state, agent_id))
           state_dir = state.state_dir
           server = self()
 
@@ -2256,6 +2877,7 @@ defmodule Patchbay.Runtime do
   end
 
   defp emit_with_event(state, agent_id, type, attrs) do
+    attrs = Redact.redact(attrs, agent_secret_values(state, agent_id))
     path = Event.path(state.state_dir, agent_id)
     repair? = not Map.has_key?(state.event_sequences, agent_id)
 
@@ -2470,7 +3092,9 @@ defmodule Patchbay.Runtime do
       in_flight_tools: MapSet.new(),
       context_generation: next_context_generation(),
       terminal_result: nil,
-      terminal_failure: nil
+      terminal_failure: nil,
+      publisher: nil,
+      stop_waiter: nil
     }
   end
 
@@ -2698,6 +3322,30 @@ defmodule Patchbay.Runtime do
     end
   end
 
+  defp resolve_secret_env(state, definition) do
+    with {:ok, declarations} <- SecretEnv.declarations(definition),
+         {:ok, values} <- SecretEnv.resolve(declarations, state.secrets_dir) do
+      {:ok, values}
+    end
+  end
+
+  defp maybe_put_secrets(opts, secrets) when map_size(secrets) == 0, do: opts
+  defp maybe_put_secrets(opts, secrets), do: Keyword.put(opts, :secrets, secrets)
+
+  defp remember_secret_values(state, _agent_id, values) when map_size(values) == 0, do: state
+
+  defp remember_secret_values(state, agent_id, values) do
+    %{state | secret_values: Map.put(state.secret_values, agent_id, values)}
+  end
+
+  defp forget_secret_values(state, agent_id) do
+    %{state | secret_values: Map.delete(state.secret_values, agent_id)}
+  end
+
+  defp agent_secret_values(state, agent_id) do
+    Map.get(state.secret_values, agent_id, %{})
+  end
+
   defp resolved_operations(definition) do
     definition
     |> Map.get(:toolkits, [])
@@ -2765,6 +3413,10 @@ defmodule Patchbay.Runtime do
   defp result_status({:ok, %{status: :error}}), do: "error"
   defp result_status({:error, _reason}), do: "error"
   defp result_status(_result), do: "error"
+
+  defp redact_result(result, state, agent_id) do
+    Redact.redact(result, agent_secret_values(state, agent_id))
+  end
 
   defp result_summary(result, limit) do
     result

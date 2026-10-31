@@ -53,11 +53,42 @@ defmodule PatchbayWeb.Layouts do
             }
           }
 
+          const PatchbayDetails = {
+            open: new Set(),
+            mounted() {
+              this.onToggle = () => {
+                if (this.el.open) {
+                  PatchbayDetails.open.add(this.el.id)
+                } else {
+                  PatchbayDetails.open.delete(this.el.id)
+                }
+              }
+              this.el.addEventListener("toggle", this.onToggle)
+              this.restore()
+            },
+            updated() {
+              this.restore()
+            },
+            destroyed() {
+              this.el.removeEventListener("toggle", this.onToggle)
+            },
+            restore() {
+              const key = this.el.id
+
+              if (key !== this.key) {
+                this.key = key
+                this.el.open = PatchbayDetails.open.has(key)
+              } else if (PatchbayDetails.open.has(key) && !this.el.open) {
+                this.el.open = true
+              }
+            }
+          }
+
           window.addEventListener("DOMContentLoaded", () => {
             const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
             const liveSocket = new LiveView.LiveSocket("/live", Phoenix.Socket, {
               params: {_csrf_token: csrfToken},
-              hooks: {PatchbayFlash, PatchbayStream}
+              hooks: {PatchbayFlash, PatchbayStream, PatchbayDetails}
             })
             liveSocket.connect()
             window.liveSocket = liveSocket

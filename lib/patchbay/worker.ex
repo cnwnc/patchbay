@@ -14,6 +14,8 @@ defmodule Patchbay.Worker do
 
   require Logger
 
+  alias Patchbay.Worker.Artifacts
+  alias Patchbay.Worker.Env
   alias Patchbay.Worker.Operations
   alias Patchbay.Worker.Protocol
   alias Patchbay.Worker.Protocol.Stream
@@ -104,9 +106,11 @@ defmodule Patchbay.Worker do
          worker_id: opts.worker_id,
          operations: opts.operations,
          workspace: opts.workspace,
+         result_dir: opts.result_dir,
          execute_timeout: opts.execute_timeout,
          max_output_bytes: opts.max_output_bytes,
-         max_frame: opts.max_frame
+         max_frame: opts.max_frame,
+         secret_names: Env.secret_names()
        }}
     else
       {:error, reason} -> {:stop, reason}
@@ -118,14 +122,7 @@ defmodule Patchbay.Worker do
       when is_map(variables) do
     timeout = min(timeout, state.execute_timeout)
 
-    result =
-      Operations.execute(state.operations, operation, arguments,
-        workspace: state.workspace,
-        agent_id: state.worker_id,
-        variables: variables,
-        timeout: timeout,
-        max_output_bytes: state.max_output_bytes
-      )
+    result = execute_operation(operation, arguments, variables, timeout, state)
 
     {:reply, result, state}
   end
@@ -179,13 +176,7 @@ defmodule Patchbay.Worker do
     timeout = request_timeout(request, state.execute_timeout)
 
     if is_binary(call_id) and is_binary(operation) and is_map(variables) do
-      case Operations.execute(state.operations, operation, arguments,
-             workspace: state.workspace,
-             agent_id: state.worker_id,
-             variables: variables,
-             timeout: timeout,
-             max_output_bytes: state.max_output_bytes
-           ) do
+      case execute_operation(operation, arguments, variables, timeout, state) do
         {:ok, result} ->
           {:result,
            %{
@@ -202,6 +193,29 @@ defmodule Patchbay.Worker do
     else
       {:result, %{call_id: call_id, status: :error, error: :invalid_request}}
     end
+  end
+
+  defp execute_operation(operation, arguments, variables, timeout, state)
+       when is_binary(operation) do
+    if Artifacts.reserved?(operation) do
+      Artifacts.read(artifact_roots(state), arguments)
+    else
+      Operations.execute(state.operations, operation, arguments,
+        workspace: state.workspace,
+        agent_id: state.worker_id,
+        variables: variables,
+        timeout: timeout,
+        max_output_bytes: state.max_output_bytes,
+        secret_names: state.secret_names
+      )
+    end
+  end
+
+  defp execute_operation(_operation, _arguments, _variables, _timeout, _state),
+    do: {:error, :unknown_operation}
+
+  defp artifact_roots(state) do
+    %{"workspace" => state.workspace, "result" => state.result_dir}
   end
 
   defp request_timeout(request, default) do
@@ -223,6 +237,7 @@ defmodule Patchbay.Worker do
     token = Keyword.get(opts, :token)
     operations = Keyword.get(opts, :operations, [])
     workspace = Keyword.get(opts, :workspace)
+    result_dir = Keyword.get(opts, :result_dir)
     execute_timeout = Keyword.get(opts, :execute_timeout, @default_execute_timeout)
     max_output = Keyword.get(opts, :max_output_bytes, @default_max_output)
     max_frame = Keyword.get(opts, :max_frame, Protocol.default_max_frame())
@@ -248,6 +263,10 @@ defmodule Patchbay.Worker do
           (not is_binary(workspace) or Path.type(workspace) != :absolute) ->
         {:error, :invalid_workspace}
 
+      not is_nil(result_dir) and
+          (not is_binary(result_dir) or Path.type(result_dir) != :absolute) ->
+        {:error, :invalid_result_dir}
+
       not is_integer(execute_timeout) or execute_timeout < 1 or execute_timeout > 3_600_000 ->
         {:error, :invalid_execute_timeout}
 
@@ -272,6 +291,7 @@ defmodule Patchbay.Worker do
            token: token,
            operations: operations,
            workspace: workspace,
+           result_dir: result_dir,
            execute_timeout: execute_timeout,
            max_output_bytes: max_output,
            max_frame: max_frame,
@@ -384,6 +404,7 @@ defmodule Patchbay.Worker do
       {"worker-id", :worker_id, :string},
       {"operations", :operations, :string},
       {"workspace", :workspace, :string},
+      {"result-dir", :result_dir, :string},
       {"execute-timeout-ms", :execute_timeout, :integer},
       {"max-output-bytes", :max_output_bytes, :integer}
     ]
@@ -392,6 +413,7 @@ defmodule Patchbay.Worker do
       token = System.get_env("PATCHBAY_WORKER_TOKEN")
       operations_path = Map.get(parsed, :operations) || System.get_env("PATCHBAY_OPERATIONS")
       workspace = Map.get(parsed, :workspace) || System.get_env("PATCHBAY_WORKSPACE")
+      result_dir = Map.get(parsed, :result_dir) || System.get_env("PATCHBAY_RESULT_DIR")
 
       opts = %{
         worker_id: Map.get(parsed, :worker_id),
@@ -399,6 +421,7 @@ defmodule Patchbay.Worker do
         manager_port: Map.get(parsed, :manager_port),
         token: token,
         workspace: workspace,
+        result_dir: result_dir,
         operations_path: operations_path
       }
 

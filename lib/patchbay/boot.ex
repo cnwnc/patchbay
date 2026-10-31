@@ -42,6 +42,7 @@ defmodule Patchbay.Boot do
   defp classify(["run-manager" | _rest]), do: :manager
   defp classify(["run-worker-supervisor" | _rest]), do: :worker_supervisor
   defp classify(["run-worker" | _rest]), do: :worker
+  defp classify(["secrets" | _rest]), do: :cli
   defp classify(["help" | _rest]), do: :cli
   defp classify(["--help" | _rest]), do: :cli
   defp classify(_argv), do: :unknown

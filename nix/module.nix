@@ -61,6 +61,7 @@
       PATCHBAY_CONFIG_DIR = cfg.configDir;
       PATCHBAY_STATE_DIR = cfg.stateDir;
       PATCHBAY_RUNTIME_DIR = cfg.runtimeDir;
+      PATCHBAY_SECRETS_DIR = cfg.secretsDir;
       PATCHBAY_WEB_PORT = toString cfg.manager.webPort;
       PATCHBAY_CONTROL_TOKEN_FILE = cfg.controlTokenFile;
       PATCHBAY_UI_TOKEN_FILE = cfg.uiTokenFile;
@@ -135,6 +136,17 @@ in {
       type = types.str;
       default = "/var/lib/patchbay";
       description = "Manager state and transcript directory.";
+    };
+
+    secretsDir = mkOption {
+      type = types.str;
+      default = "${config.services.patchbay.stateDir}/secrets";
+      description = ''
+        Manager-only named secret store. Created 0700 and owned by the manager
+        user; secret files are 0600. Must not be inside configDir or
+        agentStateDir. Exposed as PATCHBAY_SECRETS_DIR to the manager and to
+        `patchbay secrets`.
+      '';
     };
 
     runtimeDir = mkOption {
@@ -370,6 +382,14 @@ in {
         message = "services.patchbay.uiTokenFile must not be readable from the agent state or configuration directory.";
       }
       {
+        assertion =
+          !(lib.hasPrefix "${cfg.agentStateDir}/" cfg.secretsDir)
+          && !(lib.hasPrefix "${cfg.configDir}/" cfg.secretsDir)
+          && cfg.secretsDir != cfg.agentStateDir
+          && cfg.secretsDir != cfg.configDir;
+        message = "services.patchbay.secretsDir must not be readable from the agent state or configuration directory.";
+      }
+      {
         assertion = cfg.manager.supervisorHost == "127.0.0.1" || cfg.manager.supervisorHost == "localhost";
         message = "services.patchbay.manager.supervisorHost must be loopback.";
       }
@@ -381,6 +401,7 @@ in {
               cfg.configDir
               cfg.stateDir
               cfg.runtimeDir
+              cfg.secretsDir
               cfg.agentStateDir
               cfg.agentRuntimeDir
               cfg.controlTokenFile
@@ -425,6 +446,7 @@ in {
         [
           "d ${cfg.configDir} 0750 ${user} ${group} -"
           "d ${cfg.stateDir} 0700 ${user} ${group} -"
+          "d ${cfg.secretsDir} 0700 ${user} ${group} -"
           "d ${cfg.manager.transcriptDir} 0700 ${user} ${group} -"
           "d ${cfg.runtimeDir} 0750 ${user} ${group} -"
           "d ${cfg.agentStateDir} 0700 ${agentUser} ${agentGroup} -"
@@ -568,6 +590,7 @@ in {
         ReadWritePaths = [
           cfg.configDir
           cfg.stateDir
+          cfg.secretsDir
           cfg.manager.transcriptDir
           cfg.runtimeDir
         ];

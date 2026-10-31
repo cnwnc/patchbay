@@ -11,6 +11,8 @@ defmodule Patchbay.Config do
       `home/state`
     * `runtime_dir` from `PATCHBAY_RUNTIME_DIR` or `RUNTIME_DIR`, default
       `state_dir/runtime`
+    * `secrets_dir` from `PATCHBAY_SECRETS_DIR`, default
+      `state_dir/secrets`
     * `workspace_dir` from `PATCHBAY_WORKSPACE_DIR`, default `home/workspaces`
     * `result_dir` from `PATCHBAY_RESULT_DIR`, default `home/results`
 
@@ -18,13 +20,22 @@ defmodule Patchbay.Config do
   config, state, workspace, and result roots together.
   """
 
-  defstruct [:home, :config_dir, :state_dir, :runtime_dir, :workspace_dir, :result_dir]
+  defstruct [
+    :home,
+    :config_dir,
+    :state_dir,
+    :runtime_dir,
+    :secrets_dir,
+    :workspace_dir,
+    :result_dir
+  ]
 
   @type t :: %__MODULE__{
           home: Path.t(),
           config_dir: Path.t(),
           state_dir: Path.t(),
           runtime_dir: Path.t(),
+          secrets_dir: Path.t(),
           workspace_dir: Path.t(),
           result_dir: Path.t()
         }
@@ -33,6 +44,7 @@ defmodule Patchbay.Config do
   @config_variables ["PATCHBAY_CONFIG_DIR"]
   @state_variables ["PATCHBAY_STATE_DIR", "STATE_DIR"]
   @runtime_variables ["PATCHBAY_RUNTIME_DIR", "RUNTIME_DIR"]
+  @secrets_variables ["PATCHBAY_SECRETS_DIR"]
   @workspace_variables ["PATCHBAY_WORKSPACE_DIR"]
   @result_variables ["PATCHBAY_RESULT_DIR"]
 
@@ -62,6 +74,15 @@ defmodule Patchbay.Config do
         Path.join(state_dir, "runtime")
       )
 
+    secrets_dir =
+      resolve(
+        opts,
+        :secrets_dir,
+        env,
+        @secrets_variables,
+        Path.join(state_dir, "secrets")
+      )
+
     workspace_dir =
       resolve(opts, :workspace_dir, env, @workspace_variables, Path.join(home, "workspaces"))
 
@@ -73,6 +94,7 @@ defmodule Patchbay.Config do
       config_dir: config_dir,
       state_dir: state_dir,
       runtime_dir: runtime_dir,
+      secrets_dir: secrets_dir,
       workspace_dir: workspace_dir,
       result_dir: result_dir
     }

@@ -58,6 +58,7 @@ defmodule Patchbay.Worker.Wire do
     :workspace,
     :result_dir,
     :state_dir,
+    :secrets,
     :name,
     :executable,
     :argv,
@@ -101,6 +102,9 @@ defmodule Patchbay.Worker.Wire do
     :invalid_worker_token,
     :invalid_worker_id,
     :invalid_operations,
+    :invalid_secrets,
+    :invalid_secret_name,
+    :invalid_secret_value,
     :invalid_supervisor_response,
     :invalid_result,
     :not_connected,
@@ -162,7 +166,16 @@ defmodule Patchbay.Worker.Wire do
     :invalid_working_directory,
     :output_limit,
     :timeout,
-    :execution_failed
+    :execution_failed,
+    :workspace_unavailable,
+    :result_dir_unavailable,
+    :not_found,
+    :not_a_regular_file,
+    :path_outside_root,
+    :invalid_path,
+    :invalid_root,
+    :invalid_offset,
+    :invalid_length
   ]
 
   @vocabulary Enum.uniq(
@@ -224,6 +237,9 @@ defmodule Patchbay.Worker.Wire do
       when is_integer(limit) and is_binary(output) do
     {:output_limit, %{limit: limit, output: output, os_pid: nil}}
   end
+
+  def error({:read_failed, reason}) when is_atom(reason) or is_binary(reason),
+    do: {:read_failed, to_string(reason)}
 
   def error(reason) when is_atom(reason) do
     if reason in @error_atoms, do: reason, else: :execution_failed

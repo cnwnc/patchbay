@@ -1734,6 +1734,143 @@ input:focus-visible {
   color: var(--white);
 }
 
+.editor-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 2px solid var(--line);
+  background: var(--panel-2);
+}
+
+.editor-tabs .filter {
+  margin-left: 0;
+}
+
+.editor-tabs .filter:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.struct-group {
+  margin: 0;
+  padding: 0 14px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.struct-group legend {
+  padding: 10px 0 6px;
+  font-size: var(--fs-label);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.struct-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.struct-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.struct-field label {
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.struct-field input,
+.struct-field select,
+.struct-field textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--white);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--fs-data);
+}
+
+.struct-field input[readonly] {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.struct-field textarea {
+  resize: vertical;
+  tab-size: 2;
+}
+
+.struct-toolbar,
+.struct-subhead,
+.struct-item-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.struct-toolbar {
+  margin: 6px 0;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.struct-toolbar b {
+  color: var(--ink);
+}
+
+.struct-toolbar .filter,
+.struct-item-head .filter {
+  margin-left: auto;
+}
+
+.struct-item {
+  margin: 8px 0;
+  padding-bottom: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.struct-item.nested {
+  margin: 8px 12px;
+  background: var(--white);
+}
+
+.struct-item-head {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hair);
+  font-size: var(--fs-label);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.struct-subhead {
+  padding: 8px 10px 4px;
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.struct-subhead b {
+  color: var(--ink);
+}
+
+.struct-item > .struct-grid,
+.struct-item > .struct-field {
+  margin: 8px 10px 0;
+}
+
 .config-detail {
   min-height: 0;
   padding-bottom: 18px;

@@ -38,6 +38,8 @@ defmodule Patchbay.Worker.Exec do
   - `:timeout` - milliseconds, defaults to #{@default_timeout}
   - `:max_output_bytes` - defaults to #{@default_max_output}
   - `:cd` - absolute working directory
+  - `:secret_names` - environment variable names from `PATCHBAY_SECRET_ENV`
+    that the child may receive from the current environment
   """
   @spec run(binary(), [binary()], keyword()) ::
           {:ok, result()}
@@ -55,13 +57,14 @@ defmodule Patchbay.Worker.Exec do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     max_output = Keyword.get(opts, :max_output_bytes, @default_max_output)
     cd = Keyword.get(opts, :cd)
+    secret_names = Keyword.get(opts, :secret_names, [])
 
     with :ok <- validate_executable(executable),
          :ok <- validate_args(args),
          :ok <- validate_timeout(timeout),
          :ok <- validate_output_limit(max_output),
          :ok <- validate_working_directory(cd) do
-      do_run(executable, args, cd, timeout, max_output)
+      do_run(executable, args, cd, timeout, max_output, secret_names)
     end
   end
 
@@ -153,7 +156,7 @@ defmodule Patchbay.Worker.Exec do
 
   defp validate_working_directory(_cd), do: {:error, :invalid_working_directory}
 
-  defp do_run(executable, args, cd, timeout, max_output) do
+  defp do_run(executable, args, cd, timeout, max_output, secret_names) do
     started_at = System.monotonic_time(:millisecond)
     {spawn_executable, spawn_args} = ProcessGroup.command(executable, args)
 
@@ -164,7 +167,7 @@ defmodule Patchbay.Worker.Exec do
         :stderr_to_stdout,
         :hide,
         {:args, Enum.map(spawn_args, &to_charlist/1)},
-        {:env, Env.exec_env()}
+        {:env, Env.exec_env(System.get_env(), secret_names)}
       ] ++ if(cd, do: [{:cd, to_charlist(cd)}], else: [])
 
     port = Port.open({:spawn_executable, to_charlist(spawn_executable)}, port_options)

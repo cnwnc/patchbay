@@ -7,6 +7,8 @@ defmodule Patchbay.Definition.Loader do
   alias Patchbay.Definition.Prompt
   alias Patchbay.Toolkit.Manifest
   alias Patchbay.Toolkit.Native.Filesystem
+  alias Patchbay.Toolkit.Native.PersonalMemory
+  alias Patchbay.Toolkit.Native.SecretEnv
 
   @type option ::
           {:config_root, Path.t()}
@@ -169,6 +171,26 @@ defmodule Patchbay.Definition.Loader do
 
       {:error, message} ->
         Parse.error(errors, ["toolkits", index, "config", "root"], message)
+    end
+  end
+
+  defp validate_native_config(%{native: "personal-memory"} = toolkit, index, config_root, errors) do
+    case PersonalMemory.validate_config(Map.get(toolkit, :config, %{}), config_root) do
+      :ok ->
+        errors
+
+      {:error, message} ->
+        Parse.error(errors, ["toolkits", index, "config", "namespace"], message)
+    end
+  end
+
+  defp validate_native_config(%{native: "secret-env"} = toolkit, index, _config_root, errors) do
+    case SecretEnv.validate_config(Map.get(toolkit, :config, %{})) do
+      :ok ->
+        errors
+
+      {:error, path, message} ->
+        Parse.error(errors, ["toolkits", index, "config"] ++ path, message)
     end
   end
 

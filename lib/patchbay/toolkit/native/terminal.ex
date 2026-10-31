@@ -74,11 +74,44 @@ defmodule Patchbay.Toolkit.Native.Terminal do
         _form -> %{"type" => "string"}
       end
 
-    case result.label do
-      label when is_binary(label) -> Map.put(schema, "description", label)
-      _label -> schema
+    schema =
+      case description(result) do
+        nil -> schema
+        description -> Map.put(schema, "description", description)
+      end
+
+    schema
+  end
+
+  defp description(result) do
+    parts =
+      [result.label]
+      |> Enum.concat(extension_note(result))
+      |> Enum.reject(&(&1 in [nil, ""]))
+
+    case parts do
+      [] -> nil
+      parts -> Enum.join(parts, " ")
     end
   end
+
+  defp extension_note(%{form: :file, extensions: extensions}) do
+    extensions =
+      extensions
+      |> List.wrap()
+      |> Enum.map(&String.trim_leading(&1, "."))
+      |> Enum.reject(&(&1 == ""))
+
+    case extensions do
+      [] ->
+        ["(a file path inside the workspace)"]
+
+      extensions ->
+        ["(a file path inside the workspace; extensions: #{Enum.join(extensions, ", ")})"]
+    end
+  end
+
+  defp extension_note(_result), do: []
 
   defp put_required(schema, []), do: schema
   defp put_required(schema, required), do: Map.put(schema, "required", required)

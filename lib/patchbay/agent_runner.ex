@@ -98,6 +98,9 @@ defmodule Patchbay.AgentRunner do
   The arguments may contain a `results` object or may be the result map
   itself. Every unconditionally required result must be present, unknown
   result ids are rejected, and values are checked against the declared form.
+  A result whose `required-by` dependency is submitted must be submitted too,
+  and a file result's extension must fall inside the declared `extensions`
+  list when one is declared.
   """
   @spec validate_results(map(), map()) :: {:ok, map()} | {:error, term()}
   def validate_results(definition, arguments) when is_map(arguments) do
@@ -120,12 +123,21 @@ defmodule Patchbay.AgentRunner do
         |> Enum.reject(&Map.has_key?(given, &1))
         |> Enum.sort()
 
+      missing_dependents =
+        declared
+        |> Enum.filter(fn result ->
+          is_binary(result.required_by) and Map.has_key?(given, result.required_by) and
+            not Map.has_key?(given, result.id)
+        end)
+        |> Enum.map(&{&1.id, &1.required_by})
+        |> Enum.sort()
+
       value_errors =
         declared
         |> Enum.reduce([], fn result, errors ->
           case Map.fetch(given, result.id) do
             {:ok, value} when not is_nil(value) ->
-              case validate_value(result.form, value) do
+              case validate_value(result, value) do
                 :ok -> errors
                 {:error, detail} -> [{result.id, detail} | errors]
               end
@@ -139,6 +151,9 @@ defmodule Patchbay.AgentRunner do
       cond do
         unknown != [] ->
           {:error, {:unknown_results, unknown}}
+
+        missing_dependents != [] ->
+          {:error, {:missing_dependent_results, missing_dependents}}
 
         missing != [] ->
           {:error, {:missing_required_results, missing}}
@@ -511,10 +526,7 @@ defmodule Patchbay.AgentRunner do
     end
   end
 
-  defp validate_value(:number, value) when is_number(value), do: :ok
-  defp validate_value(:number, _value), do: {:error, :expected_number}
-
-  defp validate_value(form, value) when form in [:prose, :url, :file] do
+  defp validate_value(%{form: form}, value) when form in [:prose, :url] do
     if is_binary(value) and String.trim(value) != "" do
       :ok
     else
@@ -522,7 +534,37 @@ defmodule Patchbay.AgentRunner do
     end
   end
 
-  defp validate_value(_form, _value), do: :ok
+  defp validate_value(%{form: :file, extensions: extensions}, value) do
+    with true <- is_binary(value) and String.trim(value) != "",
+         :ok <- validate_file_path(value),
+         {:ok, _ext} <- lint_extension(value, extensions) do
+      :ok
+    else
+      false -> {:error, :expected_non_empty_string}
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :invalid_file_result}
+    end
+  end
+
+  defp validate_value(%{form: :number}, value) when is_number(value), do: :ok
+  defp validate_value(%{form: :number}, _value), do: {:error, :expected_number}
+
+  defp validate_value(_result, _value), do: :ok
+
+  defp validate_file_path(value) do
+    if String.contains?(value, <<0>>) do
+      {:error, :invalid_file_path}
+    else
+      case Path.basename(value) do
+        name when name in ["", ".", ".."] -> {:error, :invalid_file_path}
+        _name -> :ok
+      end
+    end
+  end
+
+  defp lint_extension(value, extensions) do
+    Patchbay.ArtifactStore.lint_source(value, extensions)
+  end
 
   defp stringify_keys(map) do
     Map.new(map, fn

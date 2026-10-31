@@ -32,7 +32,7 @@ nix run .#default -- help
 
 The management endpoint listens on loopback only. Set the port with `services.patchbay.manager.webPort` (default `4000`).
 
-The Console and Configuration routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
+The Console, Configuration, and artifact download routes require HTTP Basic authentication. The password is `PATCHBAY_UI_TOKEN`, the username is ignored. Read the token as root when connecting:
 
 ```sh
 sudo cat /run/patchbay/ui-token.env
@@ -60,6 +60,14 @@ The workspace, result, state, runtime, transcript, and per-agent roots are separ
 `Patchbay.Definition.load/2` resolves the config root automatically when the agent directory ends in `agents/<id>`; otherwise pass `config_root:`. The `id` in `agent.toml` must match the agent directory name. The registry ignores symlinked agent directories and symlinked `agent.toml` files and rescans only when `reload/1` is called; there is no file watcher.
 
 `Patchbay.Definition.parse/2` validates a TOML document without reading prompts, scripts, or the filesystem. Toolkit manifests are resolved by `parse/2` only when `toolkit_dirs:` is supplied.
+
+### Configuration editor
+
+The `/config` route has SOURCE and STRUCTURED tabs for the selected definition. Both save through the revision-checked `Patchbay.Config.Source.write/4`; a file changed after it was loaded produces a save conflict instead of an overwrite.
+
+The STRUCTURED tab is available when the definition validates and `agent.toml` parses. It edits the agent ID (read-only), model name, provider, reasoning, lifecycle kind and scheduled fields, context recovery and compaction thresholds, budgets, toolkits with a filesystem root and fixed operations, and results with `required-by` dependencies. Toolkit names must resolve to a manifest. The filesystem toolkit requires a root that passes the native toolkit check. Result IDs, required-by references, and dependency cycles are validated before writing. Invalid or blank definitions use the source editor only.
+
+Structured saves apply edits to the parsed TOML document. Comments, key order, and keys the form does not cover are kept; fields changed through the form are written in normalized TOML. A blank model name is written as `"default"`. Unsaved source and structured changes survive reload broadcasts. Switching definitions asks before discarding, and RELOAD discards them.
 
 ## Agent reference
 
@@ -195,9 +203,30 @@ The value is parsed, validated, and retained on the definition. No workspace tea
 | `form` | enum | yes | `prose`, `number`, `url`, or `file`. |
 | `required` | boolean | no | Defaults to `true`. Mutually exclusive with `required-by`. |
 | `required-by` | string | no | Must name another declared result. Sets `required` to `false` and records the dependency. |
-| `extensions` | array of strings | no | Only valid for `form = "file"`; defaults to `[]`. Empty strings are allowed, for example to represent a file without an extension. |
+| `extensions` | array of strings | no | Only valid for `form = "file"`; defaults to `[]`. Empty strings are allowed and match a file without an extension. When `extensions` is non-empty a submitted file must carry a matching extension. |
 
-All results are returned through the implicit `complete_task` tool under a `results` object. Every result whose `required` is true must be present; unknown result ids are rejected. `number` values must be JSON numbers; `prose`, `url`, and `file` values must be non-empty strings. A `required-by` result is not required by `complete_task`; the dependency is validated for existence and cycles but is not enforced at submission. Duplicate result ids, unknown dependencies, and dependency cycles are validation errors.
+All results are returned through the implicit `complete_task` tool under a `results` object. Every result whose `required` is true must be present; unknown result ids are rejected. `number` values must be JSON numbers; `prose`, `url`, and `file` values must be non-empty strings that name a file. When a `required-by` dependency is submitted, the result carrying `required-by` must be submitted too. A `file` result must carry an extension in the declared `extensions` list when one is declared (case and leading dots are ignored). Duplicate result ids, unknown dependencies, and dependency cycles are validation errors.
+
+#### Published artifacts
+
+File results are published before the run's worker exits. The values are paths inside the agent workspace or result directory, relative to it. Because the workspace belongs to the agent user and the manager does not, the manager reads the bytes through a reserved worker operation, `patchbay-read-artifact`: the worker stays confined to its own workspace and result directory and refuses anything else, including symlink escapes. The copy is written to `<state_dir>/artifacts/<agent-id>/` with manager-owned `0700` directories and `0600` files, so it outlives the worker and any later workspace teardown and cannot be read by the agent user.
+
+Published bytes are capped (8 MiB per artifact by default) and read in bounded chunks over the worker session; a file larger than the cap is not published and the run records an `artifact_publish_failed` event instead. Public names keep the source extension and are collision resistant: `<memorable-slug>-<run-tag>-<random>.<ext>`, for example `prepared-report-p9m2-axq4jpzm.md`, built from the result id and file stem, a short tag for the run, and eight random base32 characters. Publication of every file result is recorded as an `artifact_published` event; failures are recorded as `artifact_publish_failed` and do not otherwise fail the run.
+
+Run records in the transcript still contain the submitted result values, not the published bytes. Publication does not touch transcript permissions.
+
+#### Downloading artifacts
+
+Artifacts are served from the management endpoint by the same UI credentials as the Console, under `GET /artifacts/<agent-id>/<filename>`:
+
+```sh
+curl -u patchbay:"$PATCHBAY_UI_TOKEN" \
+  -O http://127.0.0.1:4000/artifacts/researcher/prepared-report-p9m2-axq4jpzm.md
+```
+
+The name must be a single published file; malformed names and traversal attempts are refused, and unknown or non-file names return `404` rather than revealing anything about the directory. Content types come from an allowlist of extension to type mappings (text, markdown, CSV, JSON, log, and common image and PDF types are served inline); every other extension, including executables, HTML, and SVG, is served as `application/octet-stream` with an `attachment` disposition. The route never serves workspace or transcript paths, only the manager-owned copies.
+
+The runtime exposes `Patchbay.Runtime.list_artifacts(server, agent_id)` and `Patchbay.Runtime.artifact(server, agent_id, name)` for a future UI; the endpoint is loopback-only, and remote operators should use an SSH tunnel as with the rest of the UI.
 
 ### Complete example
 
@@ -275,7 +304,7 @@ Manifest keys may appear at the top level or inside a `[toolkit]` table. With th
 | --- | --- | --- | --- | --- |
 | `name` | string | no | filename stem | Informational identifier. |
 | `description` | string | no | — | Toolkit description. |
-| `native` | string | no | — | Registered native toolkit id. Built-ins: `filesystem`, `terminal`. Other ids work only when registered at runtime. |
+| `native` | string | no | — | Registered native toolkit id. Built-ins: `filesystem`, `personal-memory`, `secret-env`, `terminal`. Other ids work only when registered at runtime. |
 | `implicit` | boolean | no | `false` | Makes the manifest's tools available to every agent. Only manifests whose `native` is `terminal` are accepted as implicit; other implicit manifests are ignored for global tool lists. |
 | `tools` | array of strings | no | `[]` | Selects native tool names. Empty means every tool the native toolkit provides. It does not filter fixed operations. |
 | `config` | table | no | `{}` | Toolkit configuration. The agent declaration's `[toolkits.config]` is merged over it. |
@@ -423,6 +452,42 @@ A relative `root` is resolved against the agent's config root and must resolve s
 
 Every model-supplied filesystem path is relative to the effective root, is checked component by component, and stays below the root. Existing and missing paths are resolved through existing symlinks, so a link that leaves the root is rejected before any read or write. Paths are limited to 4096 bytes. Reads, writes, edits, and directory listings are bounded, and writes are atomic within the target directory.
 
+### Personal memory
+
+Declare the built-in personal memory toolkit to expose `remember`, `append_memory`, `read_memory`, `list_memories`, `recall`, and `delete_memory`:
+
+```toml
+[[toolkits]]
+toolkit = "personal-memory"
+
+[toolkits.config]
+namespace = "research"
+max_read_bytes = 131072
+max_recall_results = 5
+```
+
+Memories are stored as Markdown below `<state_dir>/personal-memory/<agent-id>/<namespace>`. The agent id comes from the execution context, so agents never share a memory directory even when they use the same topic path. The namespace comes from the toolkit config and defaults to `default`. Directories are created `0700` and memory files `0600`.
+
+`remember` writes or overwrites a file, `append_memory` appends to an existing file or creates it when a `summary` is supplied, and `read_memory` returns the whole file. Both writing tools store a one-line summary as the Markdown first line (`# summary`). Topics are relative names; a missing `.md` extension is added. Absolute topics, `.` and `..` components, embedded separators, and control characters are rejected. Every existing path component is inspected with `lstat/1`, so a symlink cannot redirect a read, write, append, or move out of the namespace.
+
+`list_memories` returns `<path>\t<summary>` lines. `recall` tokenizes its query, ranks summary matches above body matches, and bounds both the number of results and the rendered output. `delete_memory` moves the file into `<agent-id>/.trash/<namespace>/<timestamp>/` and leaves the bytes on disk.
+
+| Config key | Type | Default | Hard limit | Meaning |
+| --- | --- | --- | --- | --- |
+| `namespace` | string | `default` | — | Single directory name below the agent's memory root. `.trash` is reserved. |
+| `max_read_bytes` | positive integer | 262144 | 4194304 | Maximum bytes read by `read_memory`. |
+| `max_write_bytes` | positive integer | 262144 | 4194304 | Maximum bytes written by one `remember` or `append_memory` call. |
+| `max_entries` | positive integer | 500 | 10000 | Maximum memory entries returned by `list_memories`. |
+| `max_scan_entries` | positive integer | 5000 | 50000 | Maximum memory entries examined by `recall`. |
+| `max_recall_results` | positive integer | 10 | 50 | Default and maximum result count for `recall`. |
+| `max_output_bytes` | positive integer | 8192 | 65536 | Maximum rendered bytes returned by `recall`. |
+
+Values above a hard limit are capped to the hard limit. Invalid or non-positive limits fall back to the default.
+
+### Secret environment
+
+The built-in `secret-env` toolkit exposes no tools. Declaring it with a `[toolkits.config.env]` table injects referenced named secrets into that agent's worker environment. See [Secrets](#secrets) for the store, schema, CLI, and redaction behavior.
+
 ## Prompts and scripts
 
 Prompt files are enabled by presence. Only regular files whose names end in `.md` or `.markdown` are loaded from the top level of a prompts directory; nested files and other extensions are ignored. Shared prompts from `<config_root>/shared/prompts` come before agent prompts from `<agent_dir>/prompts`, and each group is ordered lexically by filename. Each prompt becomes a system message carrying its filename. If no prompts are enabled, the agent receives one system message: `You are agent <id>.`
@@ -442,6 +507,62 @@ An explicit agent `[model] name` takes precedence over the environment model. An
 Non-secret values such as the base URL can use `services.patchbay.manager.environment`. Put `PATCHBAY_LLM_API_KEY` or `OPENAI_API_KEY` in a manager environment file configured with `services.patchbay.manager.environmentFiles`.
 
 The module generates `PATCHBAY_CONTROL_TOKEN` at `services.patchbay.controlTokenFile` (default `/run/patchbay/control-token.env`), `PATCHBAY_UI_TOKEN` at `services.patchbay.uiTokenFile` (default `/run/patchbay/ui-token.env`), `SECRET_KEY_BASE` at `services.patchbay.secretKeyBaseFile` (default `<stateDir>/secret-key-base`), and the Phoenix session and LiveView signing salts at `services.patchbay.signingSaltsFile` (default `<stateDir>/web-signing-salts.env`). The control token is loaded by both services; the UI token, secret key base, and signing salts are loaded only by the manager. Back up or preserve these files if browser sessions must survive a state wipe.
+
+## Secrets
+
+Named secrets live in a manager-only store, never in the configuration tree. `services.patchbay.secretsDir` defaults to `<stateDir>/secrets` and is exposed as `PATCHBAY_SECRETS_DIR`. The directory is created `0700`; each secret is one file created `0600`. The store is not readable by the agent user, the worker supervisor, or workers.
+
+```text
+<secrets_dir>/
+  github-main
+  registry-token
+```
+
+A secret file contains the raw value. Reads return the bytes unchanged. The CLI removes exactly one trailing `\n` or `\r\n` from **input**, so `printf 'value\n' | patchbay secrets set github-main` stores `value`; use `printf 'value'` when the trailing newline is part of the secret.
+
+Secret names match `[a-z0-9][a-z0-9._-]{0,63}`. Names are single path components; `/`, `\`, NUL, `.`, and `..` are refused before any path is built. Reads and deletes refuse symlinks and non-regular files, so a planted link cannot redirect the manager outside the store.
+
+### Managing secrets
+
+The CLI works directly on the store and does not require the manager service:
+
+```sh
+sudo -u patchbay patchbay secrets list
+sudo -u patchbay env PATCHBAY_STATE_DIR=/var/lib/patchbay \
+  patchbay secrets set github-main
+sudo -u patchbay env PATCHBAY_STATE_DIR=/var/lib/patchbay \
+  patchbay secrets get github-main
+sudo -u patchbay env PATCHBAY_STATE_DIR=/var/lib/patchbay \
+  patchbay secrets delete github-main
+```
+
+`set` reads the value from standard input; a value is never accepted as an argument, so it does not appear in the process list or shell history. `list` prints names only, `get` writes the raw value to stdout, and `delete` removes one file. `--secrets-dir` and `--state-dir` override path resolution.
+
+### Injecting secrets into an agent worker
+
+Declare the built-in `secret-env` toolkit and map environment variable names to `secret://<name>` references:
+
+```toml
+[[toolkits]]
+toolkit = "secret-env"
+
+[toolkits.config.env]
+GH_TOKEN = "secret://github-main"
+```
+
+The schema is one table, `env`, whose keys are environment variable names and whose values are `secret://<name>` references. Bare names, literal values, paths, and indirection through other environment variables are rejected, so an agent manifest never contains secret bytes. Validation errors name the variable but do not echo the reference.
+
+Environment variable names match `[A-Z_][A-Z0-9_]{0,127}`. `PATCHBAY_*` and ordinary process variables such as `PATH`, `HOME`, `SHELL`, `TERM`, `TMPDIR`, and the `LANG`/`LC_*` family are reserved. Multiple `secret-env` toolkits may be declared, but one variable may be declared only once.
+
+The runtime resolves references from the store only while starting that agent's worker. A missing or unreadable secret fails the start with `{:missing_secret, name}` instead of launching a partially configured worker. The selected values are passed to the worker supervisor, which validates the names again and injects only those variables into that worker's environment. Values are never placed in worker argv, provider tool schemas, general process environment, or logs.
+
+Operation children started by the worker receive the same declared variables. `PATCHBAY_WORKER_TOKEN`, `PATCHBAY_CONTROL_TOKEN`, `PATCHBAY_*` files and tokens, and manager provider credentials remain scrubbed; the worker keeps only the secret names in `PATCHBAY_SECRET_ENV`, never values. Lifecycle hooks and native manager-side toolkits do not receive secret environment variables.
+
+The agent's operations are explicitly given these values. Treat the declaration as granting the agent permission to read and transmit that secret.
+
+### Redaction
+
+The runtime keeps the values injected for one running agent and replaces literal occurrences before writing tool-history records, durable events, persisted context messages, and model-facing tool results. A tool that returns `token=<secret>` is stored and shown as `token=[redacted]`. Values shorter than four bytes are not replaced, and streamed model deltas are not rewritten. Redaction is best-effort: an operation can split, encode, or otherwise transform a secret before returning text, so it is not an exfiltration barrier.
 
 ## Unsupported or inert declarations
 

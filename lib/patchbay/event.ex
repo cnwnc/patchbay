@@ -40,7 +40,9 @@ defmodule Patchbay.Event do
     :agent_failed,
     :hook_started,
     :hook_finished,
-    :hook_failed
+    :hook_failed,
+    :artifact_published,
+    :artifact_publish_failed
   ]
 
   @fields [
@@ -83,6 +85,8 @@ defmodule Patchbay.Event do
           | :hook_started
           | :hook_finished
           | :hook_failed
+          | :artifact_published
+          | :artifact_publish_failed
 
   @type t :: %__MODULE__{
           id: binary(),

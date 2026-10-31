@@ -16,6 +16,8 @@ defmodule Patchbay.CLI.Manager do
   require Logger
 
   alias Patchbay.CLI.Manager.Control
+  alias Patchbay.Secrets
+  alias Patchbay.Secrets.Redact
   alias Patchbay.Transcript
   alias Patchbay.Worker.Operations
   alias Patchbay.Worker.Protocol
@@ -207,6 +209,7 @@ defmodule Patchbay.CLI.Manager do
          {:ok, workspace} <- optional_absolute_path(opts, :workspace),
          {:ok, result_dir} <- optional_absolute_path(opts, :result_dir),
          {:ok, state_dir} <- optional_absolute_path(opts, :state_dir),
+         {:ok, secrets} <- validate_secrets(opts),
          {:ok, operations} <- validate_operations(opts) do
       token = Token.generate()
       request_id = Token.generate()
@@ -218,6 +221,7 @@ defmodule Patchbay.CLI.Manager do
         session: nil,
         os_pid: nil,
         transcript: path,
+        secrets: secrets || %{},
         started_at_ms: System.system_time(:millisecond)
       }
 
@@ -241,7 +245,8 @@ defmodule Patchbay.CLI.Manager do
          |> maybe_put_message(:operations, operations)
          |> maybe_put_message(:workspace, workspace)
          |> maybe_put_message(:result_dir, result_dir)
-         |> maybe_put_message(:state_dir, state_dir)}
+         |> maybe_put_message(:state_dir, state_dir)
+         |> maybe_put_message(:secrets, secrets)}
 
       case Control.send_message(state.control_socket, message) do
         :ok ->
@@ -679,6 +684,20 @@ defmodule Patchbay.CLI.Manager do
     end
   end
 
+  defp validate_secrets(opts) do
+    case Keyword.fetch(opts, :secrets) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, secrets} ->
+        case Secrets.validate_map(secrets) do
+          :ok when map_size(secrets) > 0 -> {:ok, secrets}
+          :ok -> {:ok, nil}
+          {:error, reason} -> {:error, {:invalid_secrets, reason}}
+        end
+    end
+  end
+
   defp maybe_put_message(map, _key, nil), do: map
   defp maybe_put_message(map, key, value), do: Map.put(map, key, value)
 
@@ -728,7 +747,11 @@ defmodule Patchbay.CLI.Manager do
         worker = %{worker | status: :exited, os_pid: nil, session: nil}
         state = %{state | workers: Map.put(state.workers, worker_id, worker)}
         state = clear_session(state, worker_id, session)
-        write_event(state, Map.merge(%{type: :worker_exited, worker_id: worker_id}, details))
+
+        state =
+          write_event(state, Map.merge(%{type: :worker_exited, worker_id: worker_id}, details))
+
+        state = clear_worker_secrets(state, worker_id)
         state = notify_waiters(state, worker_id, {:error, {:worker_exited, details}})
 
         if is_pid(session) and Process.alive?(session),
@@ -790,6 +813,8 @@ defmodule Patchbay.CLI.Manager do
   end
 
   defp write_event(state, event) do
+    event = redact_event(event, state)
+
     frame =
       case Protocol.encode({:event, event}) do
         {:ok, frame} ->
@@ -807,6 +832,25 @@ defmodule Patchbay.CLI.Manager do
         :ok -> :ok
         {:error, reason} -> Logger.warning("transcript write failed: #{inspect(reason)}")
       end
+    end
+
+    state
+  end
+
+  defp redact_event(event, state) do
+    case Map.fetch(state.workers, Map.get(event, :worker_id)) do
+      {:ok, %{secrets: secrets}} when map_size(secrets) > 0 -> Redact.redact(event, secrets)
+      _other -> event
+    end
+  end
+
+  defp clear_worker_secrets(state, worker_id) do
+    case Map.fetch(state.workers, worker_id) do
+      {:ok, worker} ->
+        %{state | workers: Map.put(state.workers, worker_id, %{worker | secrets: %{}})}
+
+      :error ->
+        state
     end
   end
 
